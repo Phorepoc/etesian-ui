@@ -1,0 +1,6 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+#ifndef ETESIANHOME_HRH
+#define ETESIANHOME_HRH
+enum TEtesianHomeCmd { EEtHomeCmdFirst = 0x7A00 };
+#endif

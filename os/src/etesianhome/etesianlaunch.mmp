@@ -1,0 +1,23 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// etesianlaunch.mmp -- the Etesian shell's launcher (named in etesian.txt): starts the Home application, tells the shell selector the
+// shell is up (rendezvous) and lives as long as Home does, so SSM's restart monitor of the idle slot sees a dying shell.
+#include <platform_paths.hrh>
+
+TARGET			etesianlaunch.exe
+TARGETTYPE		exe
+UID				0x100039CE 0xE7016B51
+CAPABILITY		NetworkServices LocalServices ReadUserData WriteUserData UserEnvironment SwEvent
+VENDORID		0
+
+SOURCEPATH		.
+SOURCE			etesianlaunch.cpp
+
+USERINCLUDE		.
+APP_LAYER_SYSTEMINCLUDE
+OS_LAYER_SYSTEMINCLUDE
+MW_LAYER_SYSTEMINCLUDE
+
+LIBRARY			euser.lib apparc.lib apgrfx.lib
+EPOCSTACKSIZE	0x5000
