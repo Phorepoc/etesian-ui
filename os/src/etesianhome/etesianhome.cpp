@@ -12,6 +12,7 @@
 // so the Menu key brings it to the front. Sizes are written for a 320 dp wide reference screen (Etesian's 480 n9px x 2/3) and scaled.
 #include <e32debug.h>
 #include <e32math.h>
+#include <e32property.h>
 #include <eikstart.h>
 #include <aknapp.h>
 #include <akndoc.h>
@@ -121,12 +122,21 @@ public:
 		Window().SetPointerGrab(ETrue);
 		EnableDragEvents();
 		iW = aRect.Width();
-		iUnit = aRect.Width() < aRect.Height() * 9 / 16 ? aRect.Width() : aRect.Height() * 9 / 16;
+		// the 320 dp reference is the SHORTER side of the screen: portrait 360x640 (the design size) and landscape 640x360 get the same
+		// tile size, and the landscape grid has more columns instead of a tiny tile (a cell = the 80 n9px icon plus its margin)
+		iUnit = aRect.Width() < aRect.Height() ? aRect.Width() : aRect.Height();
 		iH = aRect.Height();
 		iStatusH = Sc(24);
 		iTile = Sc(60);
-		iCellW = iW / 4;
-		iCellH = Sc(60) + Sc(8) + Sc(14) + Sc(18);
+		iCols = iW / Sc(76);
+		if (iCols < 4)
+			iCols = 4;
+		iCellW = iW / iCols;
+		// the caption row is as tall as the label font needs, so it never runs into the tile above or the cell below
+		iLabelH = iEikonEnv->AnnotationFont()->HeightInPixels() + 2;
+		if (iLabelH < Sc(16))
+			iLabelH = Sc(16);
+		iCellH = Sc(4) + iTile + Sc(4) + iLabelH + Sc(8);
 		iBottomH = Sc(36);
 		User::LeaveIfError(iLs.Connect());
 		MakeTileL(iTileBmp, iMaskBmp, iTile);
@@ -191,13 +201,13 @@ public:
 	TInt Sc(TInt aDp) const { return (aDp * iUnit + 160) / 320; }
 
 	static TInt CompareApps(const CEtApp& aA, const CEtApp& aB) { return aA.iCaption->CompareC(*aB.iCaption); }
-	TInt Rows() const { return (iApps.Count() + 3) / 4; }
+	TInt Rows() const { return (iApps.Count() + iCols - 1) / iCols; }
 	TInt GridTop() const { return iStatusH + Sc(8); }
 	TInt GridHeight() const { return iH - iBottomH - GridTop(); }
 	TInt MaxScroll() const { TInt m = Rows() * iCellH - GridHeight(); return m > 0 ? m : 0; }
 	TRect CellRect(TInt aIndex) const
 		{
-		const TInt c = aIndex % 4, r = aIndex / 4;
+		const TInt c = aIndex % iCols, r = aIndex / iCols;
 		return TRect(TPoint(c * iCellW, GridTop() + r * iCellH - iScroll), TSize(iCellW, iCellH));
 		}
 	TInt HitTest(const TPoint& aP) const
@@ -213,7 +223,7 @@ public:
 		{
 		if (iSel < 0)
 			return;
-		const TInt top = (iSel / 4) * iCellH, bottom = top + iCellH;
+		const TInt top = (iSel / iCols) * iCellH, bottom = top + iCellH;
 		if (top < iScroll)
 			iScroll = top;
 		else if (bottom > iScroll + GridHeight())
@@ -299,8 +309,19 @@ public:
 				}
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(KColFg));
-			TBuf<24> cap(a->iCaption->Left(24));
-			const TRect lr(cell.iTl.iX + 2, tp.iY + iTile + Sc(4), cell.iBr.iX - 2, tp.iY + iTile + Sc(4) + Sc(16));
+				// a caption wider than its cell is shortened with an ellipsis, never run into the next cell
+			TBuf<32> cap(a->iCaption->Left(32));
+			while (cap.Length() > 1 && lab->TextWidthInPixels(cap) > iCellW - 6)
+				{
+				cap.SetLength(cap.Length() - 1);
+				cap.Trim();
+				if (lab->TextWidthInPixels(cap) + lab->CharWidthInPixels(0x2026) <= iCellW - 6)
+					{
+					cap.Append(TChar(0x2026));
+					break;
+					}
+				}
+			const TRect lr(cell.iTl.iX + 2, tp.iY + iTile + Sc(4), cell.iBr.iX - 2, tp.iY + iTile + Sc(4) + iLabelH);
 			gc.DrawText(cap, lr, (lr.Height() + lab->AscentInPixels() - lab->DescentInPixels()) / 2, CGraphicsContext::ECenter);
 			gc.SetPenStyle(CGraphicsContext::ENullPen);
 			}
@@ -346,8 +367,8 @@ public:
 				{
 				case EKeyLeftArrow: if (iSel > 0) iSel--; break;
 				case EKeyRightArrow: if (iSel < iApps.Count() - 1) iSel++; break;
-				case EKeyUpArrow: if (iSel >= 4) iSel -= 4; break;
-				case EKeyDownArrow: if (iSel + 4 < iApps.Count()) iSel += 4; else iSel = iApps.Count() - 1; break;
+				case EKeyUpArrow: if (iSel >= iCols) iSel -= iCols; break;
+				case EKeyDownArrow: if (iSel + iCols < iApps.Count()) iSel += iCols; else iSel = iApps.Count() - 1; break;
 				case EKeyEnter:
 				case EKeyDevice3:
 					Launch(iSel);
@@ -400,10 +421,27 @@ public:
 		}
 	static TInt ClockTick(TAny* aThis)
 		{
-		static_cast<CEtHomeContainer*>(aThis)->DrawNow();
+		CEtHomeContainer* self = static_cast<CEtHomeContainer*>(aThis);
+		// the system state is logged when it changes (the shell selector confirms a good start by the Normal state)
+		TInt st = -1;
+		if (RProperty::Get(TUid::Uid(0x101F8766), 0x41, st) != KErrNone)
+			st = -1;
+		if (st != self->iLastState)
+			{
+			self->iLastState = st;
+			RDebug::Printf("PH: [etesianhome] system state %d", st);
+			}
+		self->DrawNow();
 		return 0;
 		}
 	void SizeChangedL(const TRect& aRect) { (void)aRect; }
+	// the Menu key: back to the first page of the grid, nothing selected
+	void ShowTop()
+		{
+		iScroll = 0;
+		iSel = -1;
+		DrawNow();
+		}
 
 private:
 	RApaLsSession iLs;
@@ -411,7 +449,7 @@ private:
 	CFbsBitmap iTileBmp;
 	CFbsBitmap iMaskBmp;
 	CPeriodic* iClock = NULL;
-	TInt iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0;
+	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0;
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
 	TPoint iDownPos;
 	TBool iDragging = EFalse;
@@ -431,10 +469,35 @@ public:
 		iView = new (ELeave) CEtHomeContainer;
 		iView->ConstructL(ApplicationRect());
 		AddToStackL(iView);
-		RDebug::Printf("PH: [etesianhome] up");
+		// The Menu key. Symbian^3's cap server captures it at priority 0 and toggles between the idle application and its
+			// application menu (matrixmenu): with Home as the idle application, a press while Home is in front opens that menu. Home
+		// captures the key itself at a higher priority (the same trick pheshellsel uses to see it at boot), so a short press, from
+		// any application, brings Home to the front and the S^3 menu is never started. (A long press, S^3's task switcher, is not
+		// forwarded: Etesian's own Open apps view is a later rung.)
+		iMenuKey = iCoeEnv->RootWin().CaptureKeyUpAndDowns(EStdKeyApplication0, 0, 0, 5000);
+		RDebug::Printf("PH: [etesianhome] up (menu key capture %d)", iMenuKey);
+		}
+	void HandleWsEventL(const TWsEvent& aEvent, CCoeControl* aDestination)
+		{
+		const TInt type = aEvent.Type();
+		if ((type == EEventKeyDown || type == EEventKeyUp) && aEvent.Key()->iScanCode == EStdKeyApplication0)
+			{
+			if (type == EEventKeyUp && iView)
+				{
+				iView->ShowTop();
+				TApaTask self(iEikonEnv->WsSession());
+				self.SetWgId(iCoeEnv->RootWin().Identifier());
+				self.BringToForeground();
+				RDebug::Printf("PH: [etesianhome] Menu key: Home to the front");
+				}
+			return;
+			}
+		CAknAppUi::HandleWsEventL(aEvent, aDestination);
 		}
 	~CEtHomeAppUi()
 		{
+		if (iMenuKey >= 0)
+			iCoeEnv->RootWin().CancelCaptureKeyUpAndDowns(iMenuKey);
 		if (iView)
 			RemoveFromStack(iView);
 		delete iView;
@@ -445,6 +508,7 @@ public:
 		}
 private:
 	CEtHomeContainer* iView = NULL;
+	TInt iMenuKey = -1;
 	};
 
 class CEtHomeDocument : public CAknDocument
