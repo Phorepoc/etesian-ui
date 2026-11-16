@@ -154,7 +154,8 @@ public:
 			a->iUid = info.iUid;
 			const TDesC& name = info.iShortCaption.Length() ? info.iShortCaption : (info.iCaption.Length() ? info.iCaption : info.iFullName);
 			a->iCaption = name.AllocL();
-			a->iIcon = CApaMaskedBitmap::NewL();
+			a->iIcon = CApaMaskedBitmap::NewLC();
+			CleanupStack::Pop(a->iIcon);
 			if (iLs.GetAppIcon(info.iUid, TSize(iTile, iTile), *a->iIcon) != KErrNone)
 				{
 				delete a->iIcon;
