@@ -5,14 +5,20 @@
 // phone Home (guide chapter 20), drawn with CWindowGc in one CONE window (plain CONE/Avkon C++, no Qt, no Phorepoc-only API):
 //   Events        | Applications | Open apps
 //   * a black 24 dp status bar (name left, clock right) and three page dots (tap, or swipe, or Left/Right at the edges);
-//   * Applications: the apps of the application list in a grid, each a top-lit dark squircle (n = 2.8, chapters 05/06b) with the app's icon;
-//   * Open apps: the running applications as cards (the S^3 task-list API the stock fast-swap uses: CAknTaskList + CApaWindowGroupName),
-//     tap = bring to the front, the X in the corner = close (TApaTask::EndTask, KillTask if it stays);
-//   * Events: missed calls (Logs' CenRep counter) and unread messages (the message server's Inbox), tap opens Logs / Messages.
-//   * type: Fira Sans (SIL OFL, shipped in the package; falls back to the system face when it is not installed);
+//   * Applications: the apps of the application list in a 4-column grid (more when wider), each a top-lit dark squircle (n = 2.8) with the app's icon;
+//   * Open apps: the running applications as cards with a preview of the app's last frame, tap = bring to the front; edit mode (long press
+//     on a card, or Backspace) dims the previews, shows the red close squircle at each card's top-right and the lit Done / Close all buttons;
+//     the list is the stock task switcher's (tsfswdatalist.cpp): no embedded groups, no hidden window groups, not the hidden-apps
+//     property (KPSUidUikon/KUikAppHiddenList), not screensaver / idle, only apps apparc knows on the main screen;
+//   * Events: day and date, then the notifier sources an application may read: missed calls (Logs' CenRep counter) and unread messages
+//     (the message server's Inbox), tap opens Logs / Messages;
+//   * type: Fira Sans (SIL OFL, shipped in the package) at the Etesian scale: 16 Light body, 16 Bold titles, 14 Regular summaries,
+//     13 Regular labels, 12 meta, 15 Bold buttons; falls back to the Eikon faces when it is not installed;
 //   * the Menu key (captured at a higher priority than the cap server): short = Home, Applications; long (0.6 s) = Open apps.
+//     At its key down Home copies the screen (CWsScreenDevice::CopyScreenToBitmap): that is the foreground application's last frame,
+//     its preview card.
 // It is the shell's idle application (etesianlaunch.exe starts it; the selector publishes its UID as the active idle application) and,
-// like the stock idle, publishes KPSIdlePhase1Ok when it is up. Sizes are written for a 320 dp wide reference (the shorter screen side).
+// like the stock idle, publishes KPSIdlePhase1Ok when it is up. Sizes are in dp of a 320 dp wide reference (the shorter screen side).
 #include <e32debug.h>
 #include <e32math.h>
 #include <e32property.h>
@@ -37,6 +43,8 @@
 #include <msvapi.h>
 #include <msvids.h>
 #include <fbs.h>
+#include <bitdev.h>
+#include <bitstd.h>
 #include <gdi.h>
 #include <w32std.h>
 #include "etesianhome.hrh"
@@ -46,6 +54,10 @@ const TUid KLogsAppUid = { 0x101F4CD5 };
 const TUid KMessagesAppUid = { 0x100058C5 };
 const TUid KCRUidLogs = { 0x101F874E };
 const TUint32 KLogsNewMissedCalls = 6;
+// the stock task switcher's exclusions (tsfswengine): the hidden-apps property, and apps that are never shown
+const TUid KPSUidUikonCat = { 0x101F8773 };
+const TUint32 KUikAppHiddenList = 0x10;
+const TUint32 KAlwaysHiddenUids[] = { 0x100056CF /* screensaver */, 0x102750F0 /* idle app */ };
 
 // Etesian dark-mode tokens (design/tokens, AGPL-3.0-only)
 const TUint32 KColBg = 0x000000;
@@ -59,56 +71,77 @@ _LIT(KFiraRegular, "Fira Sans");
 _LIT(KFiraLight, "Fira Sans Light");
 
 static TRgb Rgb(TUint32 aRgb) { return TRgb((aRgb >> 16) & 0xFF, (aRgb >> 8) & 0xFF, aRgb & 0xFF); }
+static TInt Chan(TUint32 aRgb, TInt aShift) { return (aRgb >> aShift) & 0xFF; }
 
-// n = 2.8 superellipse coverage at (x, y) in -1..1 (1 = inside)
-static TBool InSquircle(TReal aX, TReal aY, TReal aScale)
+// is (x, y) inside a w x h shape inset by aInset px: n = 2.8 superellipse (aSquircle) or a rounded rectangle of radius aRadius
+static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TBool aSquircle, TReal aInset)
 	{
-	TReal ax = aX < 0 ? -aX : aX, ay = aY < 0 ? -aY : aY;
-	TReal px = 0, py = 0;
-	Math::Pow(px, ax, 2.8);
-	Math::Pow(py, ay, 2.8);
-	return px + py <= aScale;
-	}
-
-// the lit squircle tile: a dark gradient (#2A2A2A at the top to #080808 at the bottom, Etesian's measured dark button) with a 1 px rim,
-// and its n = 2.8 alpha mask (EGray256: white = opaque, drawn with BitBltMasked ... ETrue like application icon masks)
-static void MakeTileL(CFbsBitmap& aTile, CFbsBitmap& aMask, TInt aSize)
-	{
-	User::LeaveIfError(aTile.Create(TSize(aSize, aSize), EColor16MU));
-	User::LeaveIfError(aMask.Create(TSize(aSize, aSize), EGray256));
-	const TInt strideT = CFbsBitmap::ScanLineLength(aSize, EColor16MU);
-	const TInt strideM = CFbsBitmap::ScanLineLength(aSize, EGray256);
-	aTile.LockHeap();
-	aMask.LockHeap();
-	TUint8* t = (TUint8*)aTile.DataAddress();
-	TUint8* m = (TUint8*)aMask.DataAddress();
-	const TReal half = aSize / 2.0;
-	const TReal inset = 1.0 - 1.4 / half;		// the rim is ~1.4 px wide
-	TReal insetScale = 0;
-	Math::Pow(insetScale, inset, 2.8);
-	for (TInt y = 0; y < aSize; y++)
+	const TReal cx = aX - aW / 2, cy = aY - aH / 2;
+	const TReal ax = cx < 0 ? -cx : cx, ay = cy < 0 ? -cy : cy;
+	if (aSquircle)
 		{
-		// top light to bottom dark
-		const TInt shade = 0x2A - (0x2A - 0x08) * y / (aSize - 1);
-		for (TInt x = 0; x < aSize; x++)
+		const TReal hw = aW / 2 - aInset, hh = aH / 2 - aInset;
+		if (hw <= 0 || hh <= 0)
+			return EFalse;
+		TReal px = 0, py = 0;
+		Math::Pow(px, ax / hw, 2.8);
+		Math::Pow(py, ay / hh, 2.8);
+		return px + py <= 1.0;
+		}
+	TReal dx = ax - (aW / 2 - aInset - aRadius), dy = ay - (aH / 2 - aInset - aRadius);
+	if (dx < 0) dx = 0;
+	if (dy < 0) dy = 0;
+	if (ax > aW / 2 - aInset || ay > aH / 2 - aInset)
+		return EFalse;
+	return dx * dx + dy * dy <= aRadius * aRadius;
+}
+
+// a top-lit shape (guide 06b / 20 section 6): a vertical gradient aTop -> aBottom (and aMid in the middle when it is not KNoMid) with a
+// 1.4 px rim (aRimTop on the top third, aRimBottom below) and its antialiased alpha mask (EGray256, drawn with BitBltMasked ... ETrue)
+const TUint32 KNoMid = 0xFF000000;
+static void MakeLitL(CFbsBitmap& aBmp, CFbsBitmap& aMask, TInt aW, TInt aH, TInt aRadius, TBool aSquircle,
+					 TUint32 aTop, TUint32 aMid, TUint32 aBottom, TUint32 aRimTop, TUint32 aRimBottom)
+	{
+	aBmp.Reset();
+	aMask.Reset();
+	User::LeaveIfError(aBmp.Create(TSize(aW, aH), EColor16MU));
+	User::LeaveIfError(aMask.Create(TSize(aW, aH), EGray256));
+	const TInt strideT = CFbsBitmap::ScanLineLength(aW, EColor16MU);
+	const TInt strideM = CFbsBitmap::ScanLineLength(aW, EGray256);
+	aBmp.LockHeap();
+	aMask.LockHeap();
+	TUint8* t = (TUint8*)aBmp.DataAddress();
+	TUint8* m = (TUint8*)aMask.DataAddress();
+	for (TInt y = 0; y < aH; y++)
+		{
+		// colour of this row
+		TUint32 col = 0;
+		for (TInt sh = 0; sh <= 16; sh += 8)
+			{
+			TInt c;
+			const TInt f = aH > 1 ? y * 1000 / (aH - 1) : 0;		// 0..1000
+			if (aMid == KNoMid)
+				c = Chan(aTop, sh) + (Chan(aBottom, sh) - Chan(aTop, sh)) * f / 1000;
+			else if (f < 500)
+				c = Chan(aTop, sh) + (Chan(aMid, sh) - Chan(aTop, sh)) * f / 500;
+			else
+				c = Chan(aMid, sh) + (Chan(aBottom, sh) - Chan(aMid, sh)) * (f - 500) / 500;
+			col |= (TUint32)c << sh;
+			}
+		const TUint32 rim = y < aH / 3 ? aRimTop : aRimBottom;
+		for (TInt x = 0; x < aW; x++)
 			{
 			TInt cov = 0;
 			for (TInt sy = 0; sy < 3; sy++)
 				for (TInt sx = 0; sx < 3; sx++)
-					if (InSquircle((x + (sx + 0.5) / 3.0 - half) / half, (y + (sy + 0.5) / 3.0 - half) / half, 1.0))
+					if (Inside(x + (sx + 0.5) / 3.0, y + (sy + 0.5) / 3.0, aW, aH, aRadius, aSquircle, 0))
 						cov++;
 			m[y * strideM + x] = (TUint8)(cov * 255 / 9);
-			TUint32 px = (shade << 16) | (shade << 8) | shade;
-			if (!InSquircle((x + 0.5 - half) / half, (y + 0.5 - half) / half, insetScale))
-				{
-				const TInt rim = y < aSize / 3 ? 0x50 : 0x39;		// a lit top edge
-				px = (rim << 16) | (rim << 8) | rim;
-				}
-			*(TUint32*)(t + y * strideT + x * 4) = px;
+			*(TUint32*)(t + y * strideT + x * 4) = Inside(x + 0.5, y + 0.5, aW, aH, aRadius, aSquircle, 1.4) ? col : rim;
 			}
 		}
 	aMask.UnlockHeap();
-	aTile.UnlockHeap();
+	aBmp.UnlockHeap();
 	}
 
 class CEtApp : public CBase
@@ -122,16 +155,26 @@ public:
 	CFbsBitmap* iMask = NULL;
 	};
 
-// one running application: its window group, its list entry (icon, caption)
+// the last frame of an application, copied from the screen when the Menu key went down while it was in front
+class CEtThumb : public CBase
+	{
+public:
+	~CEtThumb() { delete iBmp; delete iDim; }
+	TInt iWgId = 0;
+	CFbsBitmap* iBmp = NULL;
+	CFbsBitmap* iDim = NULL;		// the same at 50 % (edit mode)
+	};
+
+// one running application: its window group, its list entry (icon, caption) and last frame
 class CEtCard : public CBase
 	{
 public:
-	~CEtCard() { delete iName; }
+	~CEtCard() { delete iName; delete iOwnApp; }
 	TInt iWgId = 0;
 	TUid iUid;
-	const CEtApp* iApp = NULL;
+	const CEtApp* iApp = NULL;		// the application list's entry, or the own one for an app the list does not show
+	CEtApp* iOwnApp = NULL;
 	HBufC* iName = NULL;
-	TBool iClosing = EFalse;
 	};
 
 // the message server wants an observer; the Events view only counts the Inbox, so it ignores every event
@@ -142,16 +185,21 @@ public:
 	};
 
 enum TEtPage { EPageEvents = 0, EPageApps = 1, EPageOpen = 2 };
+// the fonts of the Etesian type scale (guide 03)
+enum TEtFont { EFLabel, EFBody, EFTitle, EFSum, EFXs, EFXsB, EFBtn, EFDay, EFDate, EFCount };
 
 class CEtHomeContainer : public CCoeControl
 	{
 public:
+	CEtHomeContainer() { for (TInt i = 0; i < EFCount; i++) iF[i] = NULL; }
 	~CEtHomeContainer()
 		{
 		delete iClock;
 		delete iMenuTimer;
 		delete iCloseTimer;
+		delete iHoldTimer;
 		iCards.ResetAndDestroy();
+		iThumbs.ResetAndDestroy();
 		iApps.ResetAndDestroy();
 		iLs.Close();
 		ReleaseFonts();
@@ -169,6 +217,7 @@ public:
 		iClock->Start(15000000, 15000000, TCallBack(ClockTick, this));
 		iMenuTimer = CPeriodic::NewL(CActive::EPriorityHigh);
 		iCloseTimer = CPeriodic::NewL(CActive::EPriorityLow);
+		iHoldTimer = CPeriodic::NewL(CActive::EPriorityStandard);
 		ActivateL();
 		}
 	// geometry from the rectangle; the 320 dp reference is the SHORTER side, so a rotation keeps the sizes and changes the columns
@@ -178,27 +227,36 @@ public:
 		iH = aRect.Height();
 		iUnit = iW < iH ? iW : iH;
 		iStatusH = Sc(24);
-		iTile = Sc(60);
+		iTile = Sc(54);			// app icon 80 n9px = 54 dp
+		iMargin = Sc(11);		// the default margin, 16 n9px
 		iCols = iW / Sc(76);
 		if (iCols < 4)
 			iCols = 4;
 		iCellW = iW / iCols;
 		ReleaseFonts();
 		MakeFonts();
-		iLabelH = iLabel->HeightInPixels() + 2;
-		if (iLabelH < Sc(16))
-			iLabelH = Sc(16);
+		iLabelH = iF[EFLabel]->HeightInPixels() + 2;
 		iCellH = Sc(4) + iTile + Sc(4) + iLabelH + Sc(8);
 		iBottomH = Sc(36);
-		iTileBmp.Reset();
-		iMaskBmp.Reset();
-		TRAP_IGNORE(MakeTileL(iTileBmp, iMaskBmp, iTile));
-		// Open apps: cards, 2 per row in portrait, 4 in landscape
+		TRAP_IGNORE(MakeLitL(iTileBmp, iMaskBmp, iTile, iTile, 0, ETrue, 0x2A2A2A, KNoMid, 0x080808, 0x505050, 0x393839));
+		const TInt evt = Sc(44);		// notification thumbnails are 43-44 dp squircles
+		TRAP_IGNORE(MakeLitL(iEvTile, iEvMask, evt, evt, 0, ETrue, 0x2A2A2A, KNoMid, 0x080808, 0x505050, 0x393839));
+		iEvSize = evt;
+		iXSize = 0;
+		// Open apps: cards, 2 per row in portrait (the default), 4 in landscape; the preview keeps the screen's aspect
 		iCardCols = iW > iH ? 4 : 2;
-		iGap = Sc(12);
+		iGap = iMargin;
 		iCardW = (iW - (iCardCols + 1) * iGap) / iCardCols;
-		iCardH = iCardW * 5 / 4;
+		iPrevW = iCardW - Sc(12);
+		iPrevH = iPrevW * iH / iW;
+		iCardH = Sc(6) + iPrevH + Sc(6) + iLabelH + Sc(8);
 		iScroll = 0;
+		// the lit Done / Close all buttons and the red close squircle
+		iBtnW = Sc(120);
+		iBtnH = Sc(32);
+		TRAP_IGNORE(MakeLitL(iBtnBmp, iBtnMask, iBtnW, iBtnH, iBtnH * 21 / 100, EFalse, 0x1C1C1C, 0x101010, 0x080808, 0x393839, 0x393839));
+		iXSize = iCardW * 28 / 100;
+		TRAP_IGNORE(MakeLitL(iXBmp, iXMask, iXSize, iXSize, 0, ETrue, 0xF78673, KNoMid, 0xEF2C10, 0xFFB5A8, 0xB01E0C));
 		}
 	// Fira Sans (shipped in the package: \resource\fonts); when the face is not installed the font store hands back its default
 	CFont* MakeFont(const TDesC& aName, TInt aPx, TBool aBold)
@@ -213,37 +271,40 @@ public:
 		}
 	void MakeFonts()
 		{
-		iLabel = MakeFont(KFiraRegular, Sc(12), EFalse);
-		iBody = MakeFont(KFiraLight, Sc(16), EFalse);
-		iBold = MakeFont(KFiraRegular, Sc(15), ETrue);
-		iSmall = MakeFont(KFiraLight, Sc(12), EFalse);
-		iOwnFonts = (iLabel && iBody && iBold && iSmall);
-		if (!iLabel) iLabel = (CFont*)iEikonEnv->AnnotationFont();
-		if (!iBody) iBody = (CFont*)iEikonEnv->NormalFont();
-		if (!iBold) iBold = (CFont*)iEikonEnv->TitleFont();
-		if (!iSmall) iSmall = (CFont*)iEikonEnv->AnnotationFont();
-		TFontSpec s1 = iLabel->FontSpecInTwips();
-		TFontSpec s2 = iBody->FontSpecInTwips();
+		iF[EFLabel] = MakeFont(KFiraRegular, Sc(13), EFalse);		// small: labels
+		iF[EFBody] = MakeFont(KFiraLight, Sc(16), EFalse);		// default: body
+		iF[EFTitle] = MakeFont(KFiraRegular, Sc(16), ETrue);		// events: titles 16 bold
+		iF[EFSum] = MakeFont(KFiraRegular, Sc(14), EFalse);		// events: summary 14 regular
+		iF[EFXs] = MakeFont(KFiraRegular, Sc(12), EFalse);		// meta, time
+		iF[EFXsB] = MakeFont(KFiraRegular, Sc(12), ETrue);		// section header
+		iF[EFBtn] = MakeFont(KFiraRegular, Sc(15), ETrue);		// button 15 bold
+		iF[EFDay] = MakeFont(KFiraLight, Sc(32), EFalse);		// events header: the day, large light
+		iF[EFDate] = MakeFont(KFiraLight, Sc(27), EFalse);		// the date, about 0.85 x the day
+		iOwnFonts = ETrue;
+		for (TInt i = 0; i < EFCount; i++)
+			if (!iF[i])
+				iOwnFonts = EFalse;
+		if (!iOwnFonts)
+			{
+			// all-or-nothing: without the Fira faces everything falls back to Eikon's
+			iOwnFonts = ETrue;
+			ReleaseFonts();
+			for (TInt i = 0; i < EFCount; i++)
+				iF[i] = (CFont*)(i == EFBody || i == EFSum || i == EFDay || i == EFDate ? iEikonEnv->NormalFont() : (i == EFTitle || i == EFBtn ? iEikonEnv->TitleFont() : iEikonEnv->AnnotationFont()));
+			}
+		TFontSpec s1 = iF[EFLabel]->FontSpecInTwips();
+		TFontSpec s2 = iF[EFBody]->FontSpecInTwips();
 		RDebug::Print(_L("PH: [etesianhome] fonts: label '%S' body '%S' (own %d)"), &s1.iTypeface.iName, &s2.iTypeface.iName, iOwnFonts);
 		}
 	void ReleaseFonts()
 		{
-		// only fonts this class got from the screen device are released (an all-or-nothing flag: a mix falls back to Eikon's fonts)
 		if (iOwnFonts)
-			{
-			CFont* all[4] = { iLabel, iBody, iBold, iSmall };
-			for (TInt i = 0; i < 4; i++)
-				{
-				TBool dup = EFalse;
-				for (TInt j = 0; j < i; j++)
-					if (all[j] == all[i])
-						dup = ETrue;
-				if (!dup)
-					iCoeEnv->ScreenDevice()->ReleaseFont(all[i]);
-				}
-			}
+			for (TInt i = 0; i < EFCount; i++)
+				if (iF[i])
+					iCoeEnv->ScreenDevice()->ReleaseFont(iF[i]);
 		iOwnFonts = EFalse;
-		iLabel = iBody = iBold = iSmall = NULL;
+		for (TInt i = 0; i < EFCount; i++)
+			iF[i] = NULL;
 		}
 
 	// the icon the way the application menu gets it: through the skin (MIF / SVG icons are scaled, themed icons found)
@@ -319,7 +380,7 @@ public:
 	TInt Rows() const { return iPage == EPageOpen ? (iCards.Count() + iCardCols - 1) / iCardCols : (iApps.Count() + iCols - 1) / iCols; }
 	TInt Cols() const { return iPage == EPageOpen ? iCardCols : iCols; }
 	TInt RowH() const { return iPage == EPageOpen ? iCardH + iGap : iCellH; }
-	TInt GridTop() const { return iStatusH + (iPage == EPageOpen ? iGap : Sc(8)); }
+	TInt GridTop() const { return iStatusH + (iPage == EPageOpen ? iGap + iXSize / 3 : Sc(8)); }
 	TInt GridHeight() const { return iH - iBottomH - GridTop(); }
 	TInt MaxScroll() const { TInt m = Rows() * RowH() - GridHeight(); return m > 0 ? m : 0; }
 	TRect CellRect(TInt aIndex) const
@@ -329,12 +390,14 @@ public:
 			return TRect(TPoint(iGap + c * (iCardW + iGap), GridTop() + r * RowH() - iScroll), TSize(iCardW, iCardH));
 		return TRect(TPoint(c * iCellW, GridTop() + r * iCellH - iScroll), TSize(iCellW, iCellH));
 		}
+	// the red close squircle: at the card's top-right, slightly outside its corner (guide 20, Open apps edit mode)
 	TRect CloseRect(TInt aIndex) const
 		{
 		const TRect c = CellRect(aIndex);
-		const TInt s = Sc(30);
-		return TRect(TPoint(c.iBr.iX - s - Sc(4), c.iTl.iY + Sc(4)), TSize(s, s));
+		return TRect(TPoint(c.iBr.iX - iXSize * 3 / 4, c.iTl.iY - iXSize / 4), TSize(iXSize, iXSize));
 		}
+	TRect DoneRect() const { return TRect(TPoint(iW / 2 - iBtnW - Sc(6), iH - iBottomH + (iBottomH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
+	TRect CloseAllRect() const { return TRect(TPoint(iW / 2 + Sc(6), iH - iBottomH + (iBottomH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
 	TInt HitTest(const TPoint& aP) const
 		{
 		if (aP.iY < iStatusH || aP.iY >= iH - iBottomH)
@@ -363,6 +426,7 @@ public:
 		if (aPage < EPageEvents) aPage = EPageEvents;
 		if (aPage > EPageOpen) aPage = EPageOpen;
 		iPage = aPage;
+		iEdit = EFalse;
 		iScroll = 0;
 		iSel = -1;
 		if (iPage == EPageOpen)
@@ -376,6 +440,7 @@ public:
 	void ShowOpenApps() { SetPage(EPageOpen); }
 	void MenuDown()
 		{
+		CaptureForeground();		// before anything changes on screen: the foreground application's last frame
 		iMenuLong = EFalse;
 		iMenuTimer->Cancel();
 		iMenuTimer->Start(600000, 600000, TCallBack(MenuLongTick, this));
@@ -402,7 +467,97 @@ public:
 		return 0;
 		}
 
-	// ---- Open apps: the root window groups of the running applications
+	// ---- previews: the screen as the foreground application left it
+	CFbsBitmap* ScaledL(const CFbsBitmap& aSrc, TInt aW, TInt aH, TBool aDim)
+		{
+		CFbsBitmap* dst = new (ELeave) CFbsBitmap;
+		CleanupStack::PushL(dst);
+		User::LeaveIfError(dst->Create(TSize(aW, aH), EColor16MU));
+		CFbsBitmapDevice* dev = CFbsBitmapDevice::NewL(dst);
+		CleanupStack::PushL(dev);
+		CFbsBitGc* gc = NULL;
+		User::LeaveIfError(dev->CreateContext(gc));
+		CleanupStack::PushL(gc);
+		gc->DrawBitmap(TRect(0, 0, aW, aH), &aSrc, TRect(TPoint(0, 0), aSrc.SizeInPixels()));
+		if (aDim)
+			{
+			// 50 % black over the preview: halve every channel
+			dst->LockHeap();
+			TUint8* p = (TUint8*)dst->DataAddress();
+			const TInt stride = CFbsBitmap::ScanLineLength(aW, EColor16MU);
+			for (TInt y = 0; y < aH; y++)
+				{
+				TUint32* row = (TUint32*)(p + y * stride);
+				for (TInt x = 0; x < aW; x++)
+					row[x] = (row[x] >> 1) & 0x7F7F7F7F;
+				}
+			dst->UnlockHeap();
+			}
+		CleanupStack::PopAndDestroy(2, dev);		// gc, dev
+		CleanupStack::Pop(dst);
+		return dst;
+		}
+	void CaptureForeground()
+		{
+		RWsSession& ws = CEikonEnv::Static()->WsSession();
+		const TInt fg = ws.GetFocusWindowGroup();
+		if (fg <= 0 || fg == iCoeEnv->RootWin().Identifier())
+			return;
+		TRAPD(e, DoCaptureL(fg));
+		if (e != KErrNone)
+			RDebug::Printf("PH: [etesianhome] preview of %d: leave %d", fg, e);
+		}
+	void DoCaptureL(TInt aWgId)
+		{
+		CWsScreenDevice* sd = iCoeEnv->ScreenDevice();
+		CFbsBitmap* full = new (ELeave) CFbsBitmap;
+		CleanupStack::PushL(full);
+		User::LeaveIfError(full->Create(sd->SizeInPixels(), sd->DisplayMode()));
+		TInt r = sd->CopyScreenToBitmap(full);
+		RDebug::Printf("PH: [etesianhome] preview of wg %d: copy %d (%dx%d)", aWgId, r, full->SizeInPixels().iWidth, full->SizeInPixels().iHeight);
+		User::LeaveIfError(r);
+		CEtThumb* t = new (ELeave) CEtThumb;
+		CleanupStack::PushL(t);
+		t->iWgId = aWgId;
+		t->iBmp = ScaledL(*full, iPrevW, iPrevH, EFalse);
+		t->iDim = ScaledL(*full, iPrevW, iPrevH, ETrue);
+		for (TInt i = 0; i < iThumbs.Count(); i++)
+			if (iThumbs[i]->iWgId == aWgId)
+				{
+				delete iThumbs[i];
+				iThumbs.Remove(i);
+				break;
+				}
+		iThumbs.AppendL(t);
+		CleanupStack::Pop(t);
+		CleanupStack::PopAndDestroy(full);
+		}
+	const CEtThumb* ThumbFor(TInt aWgId) const
+		{
+		for (TInt i = 0; i < iThumbs.Count(); i++)
+			if (iThumbs[i]->iWgId == aWgId)
+				return iThumbs[i];
+		return NULL;
+		}
+
+	// ---- Open apps: the stock task switcher's list (tsfswdatalist.cpp, tsfshiddenapplist.cpp)
+	TBool OnHiddenList(TUid aUid) const
+		{
+		for (TInt i = 0; i < (TInt)(sizeof(KAlwaysHiddenUids) / sizeof(TUint32)); i++)
+			if (KAlwaysHiddenUids[i] == aUid.iUid)
+				return ETrue;
+		TBuf<50> hidden;		// KUikAppHiddenList: pairs of 16-bit halves of a UID, 0 ends the list
+		if (RProperty::Get(KPSUidUikonCat, KUikAppHiddenList, hidden) == KErrNone)
+			for (TInt i = 0; i + 1 < hidden.Length(); i += 2)
+				{
+				const TUint32 u = ((TUint32)hidden[i] << 16) | hidden[i + 1];
+				if (u == 0)
+					break;
+				if (u == aUid.iUid)
+					return ETrue;
+				}
+		return EFalse;
+		}
 	void RefreshOpen()
 		{
 		RWsSession& ws = iEikonEnv->WsSession();
@@ -410,6 +565,19 @@ public:
 		TRAPD(e, DoRefreshOpenL(ws, ownWg));
 		if (e != KErrNone)
 			RDebug::Printf("PH: [etesianhome] open apps: leave %d", e);
+		// previews of groups that are gone
+		for (TInt i = iThumbs.Count() - 1; i >= 0; i--)
+			{
+			TBool live = EFalse;
+			for (TInt j = 0; j < iCards.Count(); j++)
+				if (iCards[j]->iWgId == iThumbs[i]->iWgId)
+					live = ETrue;
+			if (!live)
+				{
+				delete iThumbs[i];
+				iThumbs.Remove(i);
+				}
+			}
 		if (iScroll > MaxScroll())
 			iScroll = MaxScroll();
 		}
@@ -418,6 +586,7 @@ public:
 		CAknTaskList* tl = CAknTaskList::NewLC(aWs);
 		const RArray<RWsSession::TWindowGroupChainInfo>& chain = tl->WgArray();
 		iCards.ResetAndDestroy();
+		TInt skipped = 0;
 		for (TInt i = 0; i < chain.Count(); i++)
 			{
 			const RWsSession::TWindowGroupChainInfo& info = chain[i];
@@ -429,23 +598,36 @@ public:
 				continue;
 			CleanupStack::PushL(gn);
 			const TUid uid = gn->AppUid();
-			const CEtApp* app = FindApp(uid);
-			// a card is a visible, user-level application: not hidden, not a system server, one the application list shows
-			if (!gn->Hidden() && !gn->IsSystem() && uid.iUid != 0 && uid != KEtesianHomeUid && app)
+			// the stock rules: a uid; the window group not hidden; not on the hidden / always-hidden lists; an application apparc knows
+			// on the main screen (screen number 0, or -1 for a console app)
+			TInt screenNo = 0;
+			const TBool known = uid.iUid != 0 && uid != KEtesianHomeUid && iLs.GetDefaultScreenNumber(screenNo, uid) == KErrNone && (screenNo == 0 || screenNo == -1);
+			if (known && !gn->Hidden() && !OnHiddenList(uid))
 				{
 				CEtCard* c = new (ELeave) CEtCard;
 				CleanupStack::PushL(c);
 				c->iWgId = info.iId;
 				c->iUid = uid;
-				c->iApp = app;
-				c->iName = app->iCaption->AllocL();
+				c->iApp = FindApp(uid);
+				if (!c->iApp)
+					{
+					// an app the application list leaves out (hidden registration): its own caption and icon
+					c->iOwnApp = new (ELeave) CEtApp;
+					c->iOwnApp->iUid = uid;
+					c->iOwnApp->iCaption = gn->Caption().AllocL();
+					TRAP_IGNORE(LoadIconL(*c->iOwnApp));
+					c->iApp = c->iOwnApp;
+					}
+				c->iName = c->iApp->iCaption->AllocL();
 				iCards.AppendL(c);
 				CleanupStack::Pop(c);
 				}
+			else
+				skipped++;
 			CleanupStack::PopAndDestroy(gn);
 			}
 		CleanupStack::PopAndDestroy(tl);
-		RDebug::Printf("PH: [etesianhome] open apps: %d", iCards.Count());
+		RDebug::Printf("PH: [etesianhome] open apps: %d (%d skipped by the stock rules)", iCards.Count(), skipped);
 		}
 	void CloseCard(TInt aIndex)
 		{
@@ -460,6 +642,19 @@ public:
 		iCloseTimer->Cancel();
 		iCloseTimer->Start(1500000, 1500000, TCallBack(CloseTick, this));
 		}
+	void CloseAll()
+		{
+		for (TInt i = 0; i < iCards.Count(); i++)
+			{
+			TApaTask t(iEikonEnv->WsSession());
+			t.SetWgId(iCards[i]->iWgId);
+			t.EndTask();
+			}
+		RDebug::Printf("PH: [etesianhome] close all (%d)", iCards.Count());
+		iClosingWg = -1;
+		iCloseTimer->Cancel();
+		iCloseTimer->Start(1500000, 1500000, TCallBack(CloseTick, this));
+		}
 	static TInt CloseTick(TAny* aThis)
 		{
 		CEtHomeContainer* self = static_cast<CEtHomeContainer*>(aThis);
@@ -471,16 +666,18 @@ public:
 		{
 		const TInt wg = iClosingWg;
 		iClosingWg = 0;
+		const TInt before = iCards.Count();
 		RefreshOpen();
 		for (TInt i = 0; i < iCards.Count(); i++)
-			if (iCards[i]->iWgId == wg)
+			if (wg == -1 || iCards[i]->iWgId == wg)
 				{
 				TApaTask t(iEikonEnv->WsSession());
-				t.SetWgId(wg);
+				t.SetWgId(iCards[i]->iWgId);
 				t.KillTask();
 				RDebug::Printf("PH: [etesianhome] killed %08x", iCards[i]->iUid.iUid);
 				}
 		RefreshOpen();
+		(void)before;
 		DrawNow();
 		}
 	void ActivateCard(TInt aIndex)
@@ -532,10 +729,11 @@ public:
 		return n;
 		}
 	TInt EventCount() const { return (iMissed > 0 ? 1 : 0) + (iUnread > 0 ? 1 : 0); }
+	TInt EventsTop() const { return iStatusH + Sc(8) + iF[EFDay]->HeightInPixels() + iF[EFDate]->HeightInPixels() + Sc(8) + iF[EFXsB]->HeightInPixels() + Sc(6); }
 	TRect EventRect(TInt aIndex) const
 		{
-		const TInt h = Sc(64);
-		return TRect(TPoint(Sc(12), iStatusH + Sc(12) + aIndex * (h + Sc(8))), TSize(iW - Sc(24), h));
+		const TInt h = Sc(53);		// list item 80 n9px
+		return TRect(TPoint(iMargin, EventsTop() + aIndex * (h + Sc(5))), TSize(iW - 2 * iMargin, h));
 		}
 
 	void Launch(TInt aIndex)
@@ -579,9 +777,32 @@ public:
 			aText.Trim();
 			}
 		}
+	// a squircle outline (n = 2.8): the selection highlight; guide 20: never a rounded rectangle for these
+	void DrawSquircleRing(CWindowGc& gc, const TRect& aR) const
+		{
+		const TInt N = 48;
+		TPoint pts[N + 1];
+		const TReal hw = aR.Width() / 2.0, hh = aR.Height() / 2.0;
+		for (TInt i = 0; i <= N; i++)
+			{
+			TReal a = 2 * KPi * i / N, c = 0, s = 0, pc = 0, ps = 0;
+			Math::Cos(c, a);
+			Math::Sin(s, a);
+			const TReal ac = c < 0 ? -c : c, as = s < 0 ? -s : s;
+			Math::Pow(pc, ac, 2.0 / 2.8);
+			Math::Pow(ps, as, 2.0 / 2.8);
+			pts[i] = TPoint(aR.iTl.iX + (TInt)(hw + hw * (c < 0 ? -pc : pc)), aR.iTl.iY + (TInt)(hh + hh * (s < 0 ? -ps : ps)));
+			}
+		gc.SetPenStyle(CGraphicsContext::ESolidPen);
+		gc.SetPenColor(Rgb(KColAccent));
+		gc.SetPenSize(TSize(2, 2));
+		for (TInt i = 0; i < N; i++)
+			gc.DrawLine(pts[i], pts[i + 1]);
+		gc.SetPenStyle(CGraphicsContext::ENullPen);
+		}
 	void DrawApps(CWindowGc& gc) const
 		{
-		gc.UseFont(iLabel);
+		gc.UseFont(iF[EFLabel]);
 		for (TInt i = 0; i < iApps.Count(); i++)
 			{
 			const TRect cell = CellRect(i);
@@ -593,21 +814,13 @@ public:
 			const CEtApp* a = iApps[i];
 			DrawIcon(gc, *a, TRect(tp, TSize(iTile, iTile)), 62);
 			if (i == iSel)
-				{
-				// selection (keys): an accent ring around the tile
-				gc.SetPenStyle(CGraphicsContext::ESolidPen);
-				gc.SetPenColor(Rgb(KColAccent));
-				gc.SetPenSize(TSize(2, 2));
-				gc.SetBrushStyle(CGraphicsContext::ENullBrush);
-				gc.DrawRoundRect(TRect(tp.iX - 2, tp.iY - 2, tp.iX + iTile + 2, tp.iY + iTile + 2), TSize(iTile / 4, iTile / 4));
-				gc.SetPenStyle(CGraphicsContext::ENullPen);
-				}
+				DrawSquircleRing(gc, TRect(tp.iX - 3, tp.iY - 3, tp.iX + iTile + 3, tp.iY + iTile + 3));
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(KColFg));
 			TBuf<32> cap(a->iCaption->Left(32));
-			Fit(cap, iLabel, iCellW - 6);
+			Fit(cap, iF[EFLabel], iCellW - 6);
 			const TRect lr(cell.iTl.iX + 2, tp.iY + iTile + Sc(4), cell.iBr.iX - 2, tp.iY + iTile + Sc(4) + iLabelH);
-			gc.DrawText(cap, lr, Baseline(iLabel, lr), CGraphicsContext::ECenter);
+			gc.DrawText(cap, lr, Baseline(iF[EFLabel], lr), CGraphicsContext::ECenter);
 			gc.SetPenStyle(CGraphicsContext::ENullPen);
 			}
 		gc.DiscardFont();
@@ -628,67 +841,120 @@ public:
 		else if (aApp.iIcon && aApp.iIcon->Mask())
 			gc.DrawBitmapMasked(dst, aApp.iIcon, TRect(TPoint(0, 0), aApp.iIcon->SizeInPixels()), aApp.iIcon->Mask(), ETrue);
 		}
+	void DrawLitButton(CWindowGc& gc, const TRect& aR, const TDesC& aText) const
+		{
+		gc.SetBrushStyle(CGraphicsContext::ENullBrush);
+		gc.BitBltMasked(aR.iTl, &iBtnBmp, TRect(TPoint(0, 0), aR.Size()), &iBtnMask, ETrue);
+		gc.UseFont(iF[EFBtn]);
+		gc.SetPenStyle(CGraphicsContext::ESolidPen);
+		gc.SetPenColor(Rgb(KColFg));
+		gc.DrawText(aText, aR, Baseline(iF[EFBtn], aR), CGraphicsContext::ECenter);
+		gc.DiscardFont();
+		gc.SetPenStyle(CGraphicsContext::ENullPen);
+		}
 	void DrawOpen(CWindowGc& gc) const
 		{
 		if (iCards.Count() == 0)
 			{
-			gc.UseFont(iBody);
+			gc.UseFont(iF[EFBody]);
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(KColFg2));
 			const TRect r(0, iStatusH, iW, iH - iBottomH);
-			gc.DrawText(_L("No open applications"), r, Baseline(iBody, r), CGraphicsContext::ECenter);
+			gc.DrawText(_L("No open applications"), r, Baseline(iF[EFBody], r), CGraphicsContext::ECenter);
 			gc.DiscardFont();
 			return;
 			}
 		for (TInt i = 0; i < iCards.Count(); i++)
 			{
 			const TRect c = CellRect(i);
-			if (c.iBr.iY <= iStatusH || c.iTl.iY >= iH - iBottomH)
+			if (c.iBr.iY + iXSize <= iStatusH || c.iTl.iY - iXSize >= iH - iBottomH)
 				continue;
 			const CEtCard* card = iCards[i];
 			gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
 			gc.SetBrushColor(Rgb(KColCard));
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
-			gc.SetPenColor(Rgb(i == iSel ? KColAccent : KColRim));
-			gc.SetPenSize(i == iSel ? TSize(2, 2) : TSize(1, 1));
+			gc.SetPenColor(Rgb(KColRim));
+			gc.SetPenSize(TSize(1, 1));
 			gc.DrawRoundRect(c, TSize(8, 8));		// cards: radius 8 (chapter 05)
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
 			gc.SetPenStyle(CGraphicsContext::ENullPen);
-			if (card->iApp)
-				DrawIcon(gc, *card->iApp, TRect(TPoint(c.iTl.iX, c.iTl.iY + Sc(8)), TSize(c.Width(), c.Height() - Sc(8) - iLabelH - Sc(12))), 45);
-			gc.UseFont(iBody);
+			// the preview: the app's last frame (dimmed to 50 % in edit mode), else its icon
+			const TRect pv(TPoint(c.iTl.iX + Sc(6), c.iTl.iY + Sc(6)), TSize(iPrevW, iPrevH));
+			const CEtThumb* th = ThumbFor(card->iWgId);
+			if (th)
+				gc.BitBlt(pv.iTl, iEdit ? th->iDim : th->iBmp);
+			else if (card->iApp)
+				DrawIcon(gc, *card->iApp, pv, 45);
+			if (i == iSel)
+				{
+				gc.SetPenStyle(CGraphicsContext::ESolidPen);
+				gc.SetPenColor(Rgb(KColAccent));
+				gc.SetPenSize(TSize(2, 2));
+				gc.SetBrushStyle(CGraphicsContext::ENullBrush);
+				gc.DrawRoundRect(c, TSize(8, 8));
+				gc.SetPenStyle(CGraphicsContext::ENullPen);
+				}
+			// the label: regular, white (guide 20)
+			gc.UseFont(iF[EFLabel]);
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(KColFg));
 			TBuf<32> nm(card->iName->Left(32));
-			Fit(nm, iBody, c.Width() - Sc(16));
-			const TRect nr(c.iTl.iX + Sc(8), c.iBr.iY - iLabelH - Sc(12), c.iBr.iX - Sc(8), c.iBr.iY - Sc(8));
-			gc.DrawText(nm, nr, Baseline(iBody, nr), CGraphicsContext::ECenter);
+			Fit(nm, iF[EFLabel], c.Width() - Sc(12));
+			const TRect nr(c.iTl.iX + Sc(6), pv.iBr.iY + Sc(6), c.iBr.iX - Sc(6), pv.iBr.iY + Sc(6) + iLabelH);
+			gc.DrawText(nm, nr, Baseline(iF[EFLabel], nr), CGraphicsContext::ECenter);
 			gc.DiscardFont();
-			// the X: a dark rounded button with a cross
-			const TRect x = CloseRect(i);
-			gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
-			gc.SetBrushColor(Rgb(KColRim));
 			gc.SetPenStyle(CGraphicsContext::ENullPen);
-			gc.DrawRoundRect(x, TSize(x.Width() / 3, x.Width() / 3));
-			gc.SetPenStyle(CGraphicsContext::ESolidPen);
-			gc.SetPenColor(Rgb(KColFg));
-			gc.SetPenSize(TSize(2, 2));
-			const TInt m = x.Width() / 3;
-			gc.DrawLine(TPoint(x.iTl.iX + m, x.iTl.iY + m), TPoint(x.iBr.iX - m, x.iBr.iY - m));
-			gc.DrawLine(TPoint(x.iBr.iX - m, x.iTl.iY + m), TPoint(x.iTl.iX + m, x.iBr.iY - m));
-			gc.SetPenStyle(CGraphicsContext::ENullPen);
-			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
 			}
+		if (iEdit)
+			for (TInt i = 0; i < iCards.Count(); i++)
+				{
+				// the red lit close squircle with a thick white cross, top-right, slightly outside the corner
+				const TRect x = CloseRect(i);
+				if (x.iBr.iY <= iStatusH || x.iTl.iY >= iH - iBottomH)
+					continue;
+				gc.SetBrushStyle(CGraphicsContext::ENullBrush);
+				gc.BitBltMasked(x.iTl, &iXBmp, TRect(TPoint(0, 0), x.Size()), &iXMask, ETrue);
+				gc.SetPenStyle(CGraphicsContext::ESolidPen);
+				gc.SetPenColor(Rgb(KColFg));
+				gc.SetPenSize(TSize(Sc(3), Sc(3)));
+				const TInt m = x.Width() * 3 / 10;
+				gc.DrawLine(TPoint(x.iTl.iX + m, x.iTl.iY + m), TPoint(x.iBr.iX - m, x.iBr.iY - m));
+				gc.DrawLine(TPoint(x.iBr.iX - m, x.iTl.iY + m), TPoint(x.iTl.iX + m, x.iBr.iY - m));
+				gc.SetPenStyle(CGraphicsContext::ENullPen);
+				}
 		}
+	// Events: header = the day (large, light) and the date (light, about 0.85 x), then a section header and the rows
 	void DrawEvents(CWindowGc& gc) const
 		{
+		TTime now;
+		now.HomeTime();
+		TBuf<32> day, date;
+		TRAP_IGNORE(now.FormatL(day, _L("%E")));
+		TRAP_IGNORE(now.FormatL(date, _L("%D%M%Y%/0%1%/1%2%/2%3")));
+		const TRect dr(iMargin, iStatusH + Sc(8), iW - iMargin, iStatusH + Sc(8) + iF[EFDay]->HeightInPixels());
+		gc.UseFont(iF[EFDay]);
+		gc.SetPenStyle(CGraphicsContext::ESolidPen);
+		gc.SetPenColor(Rgb(KColFg));
+		gc.DrawText(day, dr, Baseline(iF[EFDay], dr), CGraphicsContext::ELeft);
+		const TRect dt(iMargin, dr.iBr.iY, iW - iMargin, dr.iBr.iY + iF[EFDate]->HeightInPixels());
+		gc.UseFont(iF[EFDate]);
+		gc.SetPenColor(Rgb(KColFg2));
+		gc.DrawText(date, dt, Baseline(iF[EFDate], dt), CGraphicsContext::ELeft);
+		// section header: a small bold secondary label, right-aligned, with a hairline to its left
+		const TRect sh(iMargin, dt.iBr.iY + Sc(8), iW - iMargin, dt.iBr.iY + Sc(8) + iF[EFXsB]->HeightInPixels());
+		gc.UseFont(iF[EFXsB]);
+		gc.DrawText(_L("Notifications"), sh, Baseline(iF[EFXsB], sh), CGraphicsContext::ERight);
+		const TInt lw = iF[EFXsB]->TextWidthInPixels(_L("Notifications"));
+		gc.SetPenColor(Rgb(KColRim));
+		gc.SetPenSize(TSize(1, 1));
+		gc.DrawLine(TPoint(sh.iTl.iX, sh.iTl.iY + sh.Height() / 2), TPoint(sh.iBr.iX - lw - Sc(8), sh.iTl.iY + sh.Height() / 2));
+		gc.DiscardFont();
 		if (EventCount() == 0)
 			{
-			gc.UseFont(iBody);
-			gc.SetPenStyle(CGraphicsContext::ESolidPen);
+			gc.UseFont(iF[EFBody]);
 			gc.SetPenColor(Rgb(KColFg2));
-			const TRect r(0, iStatusH, iW, iH - iBottomH);
-			gc.DrawText(_L("No new events"), r, Baseline(iBody, r), CGraphicsContext::ECenter);
+			const TRect r(0, EventsTop(), iW, iH - iBottomH);
+			gc.DrawText(_L("No new events"), TRect(r.iTl, TSize(r.Width(), Sc(40))), Baseline(iF[EFBody], TRect(r.iTl, TSize(r.Width(), Sc(40)))), CGraphicsContext::ECenter);
 			gc.DiscardFont();
 			return;
 			}
@@ -699,13 +965,13 @@ public:
 			if (n <= 0)
 				continue;
 			const TRect r = EventRect(row++);
-			gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
-			gc.SetBrushColor(Rgb(KColCard));
-			gc.SetPenStyle(CGraphicsContext::ESolidPen);
-			gc.SetPenColor(Rgb(KColRim));
-			gc.SetPenSize(TSize(1, 1));
-			gc.DrawRoundRect(r, TSize(8, 8));
+			// rows: a lit 44 dp squircle with the app's icon, title 16 bold, summary 14 regular
+			const TPoint tp(r.iTl.iX, r.iTl.iY + (r.Height() - iEvSize) / 2);
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
+			gc.BitBltMasked(tp, &iEvTile, TRect(TPoint(0, 0), TSize(iEvSize, iEvSize)), &iEvMask, ETrue);
+			const CEtApp* app = FindApp(k == 0 ? KLogsAppUid : KMessagesAppUid);
+			if (app)
+				DrawIcon(gc, *app, TRect(tp, TSize(iEvSize, iEvSize)), 62);
 			TBuf<48> title, sub;
 			if (k == 0)
 				{
@@ -717,14 +983,16 @@ public:
 				title.Copy(_L("Messages"));
 				sub.Format(_L("%d unread"), n);
 				}
-			const TRect tr(r.iTl.iX + Sc(14), r.iTl.iY + Sc(6), r.iBr.iX - Sc(14), r.iTl.iY + r.Height() / 2);
-			const TRect sr(r.iTl.iX + Sc(14), r.iTl.iY + r.Height() / 2, r.iBr.iX - Sc(14), r.iBr.iY - Sc(4));
-			gc.UseFont(iBold);
+			const TInt tx = tp.iX + iEvSize + iMargin;
+			const TRect tr(tx, r.iTl.iY, r.iBr.iX, r.iTl.iY + r.Height() / 2 + Sc(2));
+			const TRect sr(tx, r.iTl.iY + r.Height() / 2, r.iBr.iX, r.iBr.iY);
+			gc.UseFont(iF[EFTitle]);
+			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(KColFg));
-			gc.DrawText(title, tr, Baseline(iBold, tr), CGraphicsContext::ELeft);
-			gc.UseFont(iSmall);
+			gc.DrawText(title, tr, tr.Height() - Sc(3), CGraphicsContext::ELeft);
+			gc.UseFont(iF[EFSum]);
 			gc.SetPenColor(Rgb(KColFg2));
-			gc.DrawText(sub, sr, Baseline(iSmall, sr), CGraphicsContext::ELeft);
+			gc.DrawText(sub, sr, iF[EFSum]->AscentInPixels() + Sc(1), CGraphicsContext::ELeft);
 			gc.DiscardFont();
 			}
 		}
@@ -748,19 +1016,27 @@ public:
 		gc.SetBrushColor(Rgb(KColBg));
 		gc.SetPenStyle(CGraphicsContext::ENullPen);
 		gc.DrawRect(TRect(0, 0, iW, iStatusH));
-		const CFont* f = iSmall;
+		gc.DrawRect(TRect(0, iH - iBottomH, iW, iH));
+		const CFont* f = iF[EFLabel];
 		gc.UseFont(f);
 		gc.SetPenStyle(CGraphicsContext::ESolidPen);
 		gc.SetPenColor(Rgb(KColFg2));
 		const TInt sb = (iStatusH + f->AscentInPixels() - f->DescentInPixels()) / 2;
-		gc.DrawText(_L("Etesian"), TRect(Sc(11), 0, iW / 2, iStatusH), sb, CGraphicsContext::ELeft);
+		gc.DrawText(_L("Etesian"), TRect(iMargin, 0, iW / 2, iStatusH), sb, CGraphicsContext::ELeft);
 		TTime now;
 		now.HomeTime();
 		TBuf<16> ts;
 		TRAP_IGNORE(now.FormatL(ts, _L("%J%:1%T%+B")));
 		gc.SetPenColor(Rgb(KColFg));
-		gc.DrawText(ts, TRect(iW / 2, 0, iW - Sc(11), iStatusH), sb, CGraphicsContext::ERight);
+		gc.DrawText(ts, TRect(iW / 2, 0, iW - iMargin, iStatusH), sb, CGraphicsContext::ERight);
 		gc.DiscardFont();
+		if (iEdit && iPage == EPageOpen)
+			{
+			// edit mode: the lit Done and Close all buttons take the place of the dots
+			DrawLitButton(gc, DoneRect(), _L("Done"));
+			DrawLitButton(gc, CloseAllRect(), _L("Close all"));
+			return;
+			}
 		// page dots: Events | Applications | Open apps, the current one lit
 		gc.SetPenStyle(CGraphicsContext::ENullPen);
 		const TInt dr = Sc(3), gap = Sc(14), cy = iH - iBottomH / 2;
@@ -813,7 +1089,12 @@ public:
 				case EKeyDownArrow: if (iSel + cols < Items()) iSel += cols; else iSel = Items() - 1; break;
 				case EKeyBackspace:
 				case EKeyDelete:
-					if (iPage == EPageOpen) { CloseCard(iSel); return EKeyWasConsumed; }
+					// Open apps: the first press enters edit mode, a press in edit mode closes the selected card
+					if (iPage != EPageOpen) return EKeyWasNotConsumed;
+					if (!iEdit) iEdit = ETrue; else CloseCard(iSel);
+					break;
+				case EKeyEscape:
+					if (iEdit) { iEdit = EFalse; break; }
 					return EKeyWasNotConsumed;
 				case EKeyEnter:
 				case EKeyDevice3:
@@ -836,6 +1117,18 @@ public:
 					LaunchUid(k == 0 ? KLogsAppUid : KMessagesAppUid);
 				}
 		}
+	static TInt HoldTick(TAny* aThis)
+		{
+		CEtHomeContainer* self = static_cast<CEtHomeContainer*>(aThis);
+		self->iHoldTimer->Cancel();
+		if (self->iPage == EPageOpen && !self->iDragging && !self->iSwiping && self->iDownHit >= 0)
+			{
+			self->iEdit = ETrue;
+			self->iHeld = ETrue;		// the finger lifting is not a tap
+			self->DrawNow();
+			}
+		return 0;
+		}
 	void HandlePointerEventL(const TPointerEvent& aE)
 		{
 		switch (aE.iType)
@@ -845,17 +1138,27 @@ public:
 				iDownScroll = iScroll;
 				iDragging = EFalse;
 				iSwiping = EFalse;
+				iHeld = EFalse;
 				iDownHit = iPage == EPageEvents ? -1 : HitTest(aE.iPosition);
+				if (iPage == EPageOpen && !iEdit)
+					{
+					iHoldTimer->Cancel();
+					iHoldTimer->Start(700000, 700000, TCallBack(HoldTick, this));		// a long press = edit mode
+					}
 				break;
 			case TPointerEvent::EDrag:
 				{
 				const TInt dy = aE.iPosition.iY - iDownPos.iY;
 				const TInt dx = aE.iPosition.iX - iDownPos.iX;
 				if (!iDragging && !iSwiping && (dx > Sc(12) || dx < -Sc(12)) && (dx > 0 ? dx : -dx) > (dy > 0 ? dy : -dy))
+					{
 					iSwiping = ETrue;		// a horizontal gesture changes the page when the finger lifts
+					iHoldTimer->Cancel();
+					}
 				if (!iSwiping && (iDragging || dy > Sc(8) || dy < -Sc(8)))
 					{
 					iDragging = ETrue;
+					iHoldTimer->Cancel();
 					TInt s = iDownScroll - dy;
 					if (s > MaxScroll()) s = MaxScroll();
 					if (s < 0) s = 0;
@@ -869,12 +1172,13 @@ public:
 				}
 			case TPointerEvent::EButton1Up:
 				{
+				iHoldTimer->Cancel();
 				const TInt dx = aE.iPosition.iX - iDownPos.iX;
 				if (iSwiping && (dx > Sc(48) || dx < -Sc(48)))
 					SetPage(dx < 0 ? iPage + 1 : iPage - 1);
-				else if (!iDragging && !iSwiping)
+				else if (!iDragging && !iSwiping && !iHeld)
 					HandleTap(aE.iPosition);
-				iDragging = iSwiping = EFalse;
+				iDragging = iSwiping = iHeld = EFalse;
 				break;
 				}
 			default:
@@ -883,6 +1187,14 @@ public:
 		}
 	void HandleTap(const TPoint& aP)
 		{
+		if (iEdit && iPage == EPageOpen)
+			{
+			if (DoneRect().Contains(aP)) { iEdit = EFalse; DrawNow(); return; }
+			if (CloseAllRect().Contains(aP)) { CloseAll(); return; }
+			for (TInt i = 0; i < iCards.Count(); i++)
+				if (CloseRect(i).Contains(aP)) { CloseCard(i); return; }
+			return;		// in edit mode a card does not launch
+			}
 		if (aP.iY >= iH - iBottomH)
 			{
 			// a dot: x decides the page
@@ -902,12 +1214,7 @@ public:
 			return;
 		iSel = hit;
 		if (iPage == EPageOpen)
-			{
-			if (CloseRect(hit).Contains(aP))
-				CloseCard(hit);
-			else
-				ActivateCard(hit);
-			}
+			ActivateCard(hit);
 		else
 			Launch(hit);
 		}
@@ -923,7 +1230,7 @@ public:
 			self->iLastState = st;
 			RDebug::Printf("PH: [etesianhome] system state %d", st);
 			}
-		if (self->iPage == EPageOpen && !self->iDragging)
+		if (self->iPage == EPageOpen && !self->iDragging && !self->iEdit)
 			self->RefreshOpen();
 		else if (self->iPage == EPageEvents)
 			self->RefreshEvents();
@@ -931,10 +1238,11 @@ public:
 		return 0;
 		}
 	void SizeChangedL(const TRect& aRect) { (void)aRect; }
-	// the screen turned: new rectangle, same tile size, other column counts
+	// the screen turned: new rectangle, same tile size, other column counts (the old previews have the old aspect: dropped)
 	void Relayout(const TRect& aRect)
 		{
 		SetRect(aRect);
+		iThumbs.ResetAndDestroy();
 		Layout(aRect);
 		DrawNow();
 		RDebug::Printf("PH: [etesianhome] layout %dx%d: %d columns, cards %d per row", iW, iH, iCols, iCardCols);
@@ -944,22 +1252,23 @@ private:
 	RApaLsSession iLs;
 	RPointerArray<CEtApp> iApps;
 	RPointerArray<CEtCard> iCards;
-	CFbsBitmap iTileBmp;
-	CFbsBitmap iMaskBmp;
+	RPointerArray<CEtThumb> iThumbs;
+	CFbsBitmap iTileBmp, iMaskBmp;		// the lit app squircle
+	CFbsBitmap iEvTile, iEvMask;		// the 44 dp one of the Events rows
+	CFbsBitmap iBtnBmp, iBtnMask;		// the lit Done / Close all button
+	CFbsBitmap iXBmp, iXMask;			// the red close squircle
 	CPeriodic* iClock = NULL;
 	CPeriodic* iMenuTimer = NULL;
 	CPeriodic* iCloseTimer = NULL;
-	CFont* iLabel = NULL;
-	CFont* iBody = NULL;
-	CFont* iBold = NULL;
-	CFont* iSmall = NULL;
+	CPeriodic* iHoldTimer = NULL;
+	CFont* iF[EFCount];
 	TBool iOwnFonts = EFalse;
-	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0;
-	TInt iCardCols = 2, iCardW = 0, iCardH = 0, iGap = 0, iClosingWg = 0;
+	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0, iMargin = 0;
+	TInt iCardCols = 2, iCardW = 0, iCardH = 0, iGap = 0, iClosingWg = 0, iPrevW = 0, iPrevH = 0, iXSize = 0, iBtnW = 0, iBtnH = 0, iEvSize = 0;
 	TInt iPage = EPageApps, iMissed = 0, iUnread = 0;
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
 	TPoint iDownPos;
-	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse;
+	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse, iEdit = EFalse, iHeld = EFalse;
 	};
 
 class CEtHomeAppUi : public CAknAppUi
