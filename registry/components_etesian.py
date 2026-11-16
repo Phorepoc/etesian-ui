@@ -21,4 +21,6 @@ COMPONENTS = {
     "etesianhome": dict(mmp=os.path.join(_SRC, "etesianhome.mmp"), sis=True),
     # "Etesian shell": the visible app that chooses the shell for the next start (CenRep key 10), no Control Panel plug-in needed
     "etesianshell": dict(mmp=os.path.join(os.path.dirname(_SRC), "etesianshell", "etesianshell.mmp"), sis=True),
+    # the dialler: pilot of the shell-tagged apps
+    "etesianphone": dict(mmp=os.path.join(os.path.dirname(_SRC), "etesianphone", "etesianphone.mmp"), sis=True),
 }

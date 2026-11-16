@@ -10,11 +10,11 @@ Writes <outdir>/<name>.svg and <outdir>/mapping.txt (application UID -> name; UI
 import math, os, re, sys
 
 APPS = [  # name, glyph, accent, application UID (0 = to fill in from the image's application list)
-    ("phone", "phone", "#62B700", 0x100058B3), ("messages", "message", "#09A7CC", 0x100058C5), ("contacts", "person", "#007DC9", 0),
-    ("calendar", "calendar", "#EF5500", 0), ("clock", "clock", "#F77219", 0), ("music", "music", "#CC09BA", 0), ("gallery", "photo", "#821DDE", 0),
-    ("settings", "settings", "#4591FF", 0), ("browser", "globe", "#4591FF", 0), ("camera", "camera", "#821DDE", 0), ("files", "folder", "#EA650A", 0),
+    ("phone", "phone", "#62B700", 0xE7016B53), ("messages", "message", "#09A7CC", 0x100058C5), ("contacts", "person", "#007DC9", 0x101F4CCE),
+    ("calendar", "calendar", "#EF5500", 0x10005901), ("clock", "clock", "#F77219", 0x10005903), ("music", "music", "#CC09BA", 0x102072C3), ("gallery", "photo", "#821DDE", 0x200159B2),
+    ("settings", "settings", "#4591FF", 0x100058EC), ("browser", "globe", "#4591FF", 0xE7016B20), ("camera", "camera", "#821DDE", 0), ("files", "folder", "#EA650A", 0x101F84EB),
     ("calculator", "grid", "#ED9507", 0x10005902), ("notes", "edit", "#F2B111", 0x10005907), ("email", "mail", "#0067BC", 0),
-    ("bluetooth", "bluetooth", "#1C51AF", 0), ("search", "search", "#4591FF", 0), ("logs", "list", "#62B700", 0x101F4CD5), ("radio", "speaker", "#FF8500", 0)]
+    ("bluetooth", "bluetooth", "#1C51AF", 0x10005951), ("search", "search", "#4591FF", 0x10282411), ("logs", "list", "#62B700", 0x101F4CD5), ("radio", "speaker", "#FF8500", 0x10207A89)]
 
 def squircle(n=2.8, r=46.0, c=50.0, pts=72):
     out = []

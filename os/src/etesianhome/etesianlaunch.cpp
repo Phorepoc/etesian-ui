@@ -7,11 +7,21 @@
 #include <apgcli.h>
 #include <apacmdln.h>
 #include <apgtask.h>
+#include <f32file.h>
+#include "../phedevmenu/pheshellapps.h"
 
 const TUid KEtesianHomeUid = { 0xE7016B50 };
 
 static TInt DoLaunch()
 	{
+	// shell-tagged apps: core's pheshellsel applies the tag files of the active shell at every start (pheshellapps.h); an image
+	// from before that does not, so the launcher does it too (idempotent: the same lists are recomputed)
+	RFs fs;
+	if (fs.Connect() == KErrNone)
+		{
+		TRAP_IGNORE(PheApplyShellAppsL(fs, _L("etesian")));
+		fs.Close();
+		}
 	RApaLsSession ls;
 	TInt r = ls.Connect();
 	if (r != KErrNone)

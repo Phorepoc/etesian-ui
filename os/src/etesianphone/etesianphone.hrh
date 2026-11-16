@@ -1,0 +1,6 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: AGPL-3.0-only
+#ifndef ETESIANPHONE_HRH
+#define ETESIANPHONE_HRH
+enum TEtesianPhoneCmd { EEtPhoneCmdFirst = 0x7C00 };
+#endif

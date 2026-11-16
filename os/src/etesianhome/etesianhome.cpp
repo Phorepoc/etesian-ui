@@ -47,6 +47,7 @@
 #include <bitstd.h>
 #include <gdi.h>
 #include <w32std.h>
+#include "../phedevmenu/pheshellapps.h"
 #include "etesianhome.hrh"
 
 const TUid KEtesianHomeUid = { 0xE7016B50 };
@@ -344,10 +345,26 @@ public:
 				User::After(250000);
 			}
 		iApps.ResetAndDestroy();
+		// shell-tagged apps (pheshellapps.h): what belongs to another shell, and what this shell replaces, is not in the grid
+		RArray<TUint32> managed, hide;
+		CleanupClosePushL(managed);
+		CleanupClosePushL(hide);
+		{
+		RFs fs;
+		if (fs.Connect() == KErrNone)
+			{
+			TPheHiddenCollector apps(_L("etesian"), managed, hide);
+			TRAP_IGNORE(PheForEachTagFileL(fs, _L(".apps"), apps));
+			TPheHiddenCollector hides(_L("etesian"), managed, hide);
+			hides.iHideMode = ETrue;
+			TRAP_IGNORE(PheForEachTagFileL(fs, _L(".hides"), hides));
+			fs.Close();
+			}
+		}
 		TApaAppInfo info;
 		while (r == KErrNone && iLs.GetNextApp(info) == KErrNone)
 			{
-			if (info.iUid == KEtesianHomeUid)
+			if (info.iUid == KEtesianHomeUid || hide.Find(info.iUid.iUid) != KErrNotFound)
 				continue;
 			TApaAppCapabilityBuf cap;
 			if (iLs.GetAppCapability(cap, info.iUid) == KErrNone && cap().iAppIsHidden)
@@ -358,11 +375,13 @@ public:
 			const TDesC& name = info.iShortCaption.Length() ? info.iShortCaption : (info.iCaption.Length() ? info.iCaption : info.iFullName);
 			a->iCaption = name.AllocL();
 			LoadIconL(*a);
+			RDebug::Print(_L("PH: [etesianhome] app %08x %S"), a->iUid.iUid, a->iCaption);
 			iApps.AppendL(a);
 			CleanupStack::Pop(a);
 			}
 		iApps.Sort(TLinearOrder<CEtApp>(CompareApps));
-		RDebug::Printf("PH: [etesianhome] %d apps (list r=%d)", iApps.Count(), r);
+		RDebug::Printf("PH: [etesianhome] %d apps (list r=%d, %d tagged, %d hidden by the tags)", iApps.Count(), r, managed.Count(), hide.Count());
+		CleanupStack::PopAndDestroy(2, &managed);
 		}
 	TInt Sc(TInt aDp) const { return (aDp * iUnit + 160) / 320; }
 
@@ -1238,6 +1257,16 @@ public:
 		return 0;
 		}
 	void SizeChangedL(const TRect& aRect) { (void)aRect; }
+	// the active theme changed (the Themes application, or the Etesian shell app): the icons are fetched again from the skin
+	void SkinChanged()
+		{
+		TRAP_IGNORE(LoadAppsL());
+		iCards.ResetAndDestroy();
+		if (iPage == EPageOpen)
+			RefreshOpen();
+		DrawNow();
+		RDebug::Printf("PH: [etesianhome] skin changed: icons reloaded");
+		}
 	// the screen turned: new rectangle, same tile size, other column counts (the old previews have the old aspect: dropped)
 	void Relayout(const TRect& aRect)
 		{
@@ -1333,6 +1362,8 @@ public:
 		CAknAppUi::HandleResourceChangeL(aType);
 		if (aType == KEikDynamicLayoutVariantSwitch && iView)
 			iView->Relayout(ApplicationRect());
+		else if (aType == KAknsMessageSkinChange && iView)
+			iView->SkinChanged();		// another theme: the app icons come from the active skin
 		}
 private:
 	CEtHomeContainer* iView = NULL;

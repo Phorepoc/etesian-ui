@@ -18,6 +18,10 @@ OUT=$PHOREPOC_BUILD/skin-gen
 python3 "$REPO/tools/build_skin.py" etesian-dark "$OUT"
 FILES=()
 FILES+=(--file "$REPO/shell/etesian.txt=!:/resource/phe/shells/etesian.txt")
+for t in apps hides assoc; do
+  FILES+=(--file "$REPO/shell/etesian.$t=!:/resource/phe/shells/etesian.$t")
+done
+# the default theme's icon sources and their licence stay in the repository; the compiled theme is the skin below
 FILES+=(--file "$OUT/etesian-dark.skn=!:/private/10207114/import/$UID_SKIN/etesian-dark.skn")
 for ext in mif mbm; do
   [ -f "$OUT/etesian-dark.$ext" ] && FILES+=(--file "$OUT/etesian-dark.$ext=!:/resource/skins/$UID_SKIN/etesian-dark.$ext")
@@ -31,5 +35,5 @@ for f in "$REPO/LICENSES/AGPL-3.0-only.txt" "$REPO/NOTICE"; do
   FILES+=(--file "$f=!:/resource/etesian/licences/$(basename "$f")")
 done
 mkdir -p "$PHOREPOC_BUILD/sis"
-python3 "$PHOREPOC_PDK/tools/make_sis.py" etesianhome etesianlaunch etesianshell --unsigned --name "Etesian" --vendor Phorepoc \
+python3 "$PHOREPOC_PDK/tools/make_sis.py" etesianhome etesianlaunch etesianshell etesianphone --unsigned --name "Etesian" --vendor Phorepoc \
   --version "${PHOREPOC_PACKAGE_VERSION:-0.1.0}" "${FILES[@]}" --out "$PHOREPOC_BUILD/sis/etesian-ui-x32.sis"
