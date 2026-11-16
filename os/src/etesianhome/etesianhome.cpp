@@ -24,6 +24,8 @@
 #include <apgcli.h>
 #include <apgtask.h>
 #include <apgicnfl.h>
+#include <aknsutils.h>
+#include <akniconutils.h>
 #include <apacmdln.h>
 #include <fbs.h>
 #include <gdi.h>
@@ -95,10 +97,12 @@ static void MakeTileL(CFbsBitmap& aTile, CFbsBitmap& aMask, TInt aSize)
 class CEtApp : public CBase
 	{
 public:
-	~CEtApp() { delete iCaption; delete iIcon; }
+	~CEtApp() { delete iCaption; delete iIcon; delete iBmp; delete iMask; }
 	TUid iUid;
 	HBufC* iCaption;
 	CApaMaskedBitmap* iIcon;
+	CFbsBitmap* iBmp = NULL;		// the skin-aware (MIF / SVG) app icon and its mask, sized for the tile
+	CFbsBitmap* iMask = NULL;
 	};
 
 class CEtHomeContainer : public CCoeControl
@@ -117,6 +121,7 @@ public:
 		Window().SetPointerGrab(ETrue);
 		EnableDragEvents();
 		iW = aRect.Width();
+		iUnit = aRect.Width() < aRect.Height() * 9 / 16 ? aRect.Width() : aRect.Height() * 9 / 16;
 		iH = aRect.Height();
 		iStatusH = Sc(24);
 		iTile = Sc(60);
@@ -154,20 +159,38 @@ public:
 			a->iUid = info.iUid;
 			const TDesC& name = info.iShortCaption.Length() ? info.iShortCaption : (info.iCaption.Length() ? info.iCaption : info.iFullName);
 			a->iCaption = name.AllocL();
-			a->iIcon = CApaMaskedBitmap::NewLC();
-			CleanupStack::Pop(a->iIcon);
-			if (iLs.GetAppIcon(info.iUid, TSize(iTile, iTile), *a->iIcon) != KErrNone)
+			// the icon the way the application menu gets it: through the skin (MIF / SVG icons are scaled, themed icons found)
+			CFbsBitmap* bmp = NULL;
+			CFbsBitmap* mask = NULL;
+			TRAPD(ie, AknsUtils::CreateAppIconLC(AknsUtils::SkinInstance(), info.iUid, EAknsAppIconTypeList, bmp, mask); CleanupStack::Pop(2));
+			if (ie == KErrNone && bmp)
 				{
-				delete a->iIcon;
-				a->iIcon = NULL;
+				const TSize g(iTile * 62 / 100, iTile * 62 / 100);
+				AknIconUtils::SetSize(bmp, g, EAspectRatioPreserved);
+				if (mask)
+					AknIconUtils::SetSize(mask, g, EAspectRatioPreserved);
+				a->iBmp = bmp;
+				a->iMask = mask;
+				}
+			else
+				{
+				a->iIcon = CApaMaskedBitmap::NewLC();
+				CleanupStack::Pop(a->iIcon);
+				if (iLs.GetAppIcon(info.iUid, TSize(iTile, iTile), *a->iIcon) != KErrNone)
+					{
+					delete a->iIcon;
+					a->iIcon = NULL;
+					}
 				}
 			iApps.AppendL(a);
 			CleanupStack::Pop(a);
 			}
+		iApps.Sort(TLinearOrder<CEtApp>(CompareApps));
 		RDebug::Printf("PH: [etesianhome] %d apps (list r=%d)", iApps.Count(), r);
 		}
-	TInt Sc(TInt aDp) const { return (aDp * iW + 160) / 320; }
+	TInt Sc(TInt aDp) const { return (aDp * iUnit + 160) / 320; }
 
+	static TInt CompareApps(const CEtApp& aA, const CEtApp& aB) { return aA.iCaption->CompareC(*aB.iCaption); }
 	TInt Rows() const { return (iApps.Count() + 3) / 4; }
 	TInt GridTop() const { return iStatusH + Sc(8); }
 	TInt GridHeight() const { return iH - iBottomH - GridTop(); }
@@ -249,7 +272,16 @@ public:
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
 			gc.BitBltMasked(tp, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
 			const CEtApp* a = iApps[i];
-			if (a->iIcon && a->iIcon->Mask())
+			if (a->iBmp)
+				{
+				const TSize sz = a->iBmp->SizeInPixels();
+				const TPoint gp(tp.iX + (iTile - sz.iWidth) / 2, tp.iY + (iTile - sz.iHeight) / 2);
+				if (a->iMask)
+					gc.BitBltMasked(gp, a->iBmp, TRect(TPoint(0, 0), sz), a->iMask, ETrue);
+				else
+					gc.BitBlt(gp, a->iBmp, TRect(TPoint(0, 0), sz));
+				}
+			else if (a->iIcon && a->iIcon->Mask())
 				{
 				const TInt g = iTile * 62 / 100;		// the glyph sits inside the tile like Etesian's lit icons
 				const TRect dst(TPoint(tp.iX + (iTile - g) / 2, tp.iY + (iTile - g) / 2), TSize(g, g));
@@ -379,7 +411,7 @@ private:
 	CFbsBitmap iTileBmp;
 	CFbsBitmap iMaskBmp;
 	CPeriodic* iClock = NULL;
-	TInt iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0;
+	TInt iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0;
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
 	TPoint iDownPos;
 	TBool iDragging = EFalse;
