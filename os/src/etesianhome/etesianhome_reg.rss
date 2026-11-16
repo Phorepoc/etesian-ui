@@ -1,0 +1,16 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: AGPL-3.0-only
+// the Home application: hidden from the application lists (it is the shell, not an app to start from the grid)
+#include <appinfo.rh>
+#include <etesianhome.rsg>
+
+UID2 KUidAppRegistrationResourceFile
+UID3 0xE7016B50
+
+RESOURCE APP_REGISTRATION_INFO
+	{
+	app_file = "etesianhome";
+	localisable_resource_file = "\resource\apps\etesianhome";
+	localisable_resource_id = R_ETESIANHOME_LOCALISABLE_APP_INFO;
+	hidden = KAppIsHidden;
+	}

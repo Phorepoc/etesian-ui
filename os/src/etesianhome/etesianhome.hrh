@@ -1,0 +1,6 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: AGPL-3.0-only
+#ifndef ETESIANHOME_HRH
+#define ETESIANHOME_HRH
+enum TEtesianHomeCmd { EEtHomeCmdFirst = 0x7A00 };
+#endif

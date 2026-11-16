@@ -1,0 +1,23 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: AGPL-3.0-only
+NAME ETHM
+
+#include <eikon.rh>
+#include <avkon.rh>
+#include <avkon.rsg>
+#include <appinfo.rh>
+#include "etesianhome.hrh"
+
+RESOURCE RSS_SIGNATURE { }
+RESOURCE TBUF r_default_document_name { buf = ""; }
+
+RESOURCE EIK_APP_INFO
+	{
+	cba = R_AVKON_SOFTKEYS_EMPTY;
+	}
+
+RESOURCE LOCALISABLE_APP_INFO r_etesianhome_localisable_app_info
+	{
+	short_caption = "Home";
+	caption_and_icon = CAPTION_AND_ICON_INFO { caption = "Etesian Home"; number_of_icons = 0; };
+	}
