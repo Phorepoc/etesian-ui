@@ -16,4 +16,4 @@ Build (the pdk's package.yml does this from `package.conf`; locally in a `ghcr.i
 `tools/gen_descriptor.py` writes `skin/etesian-dark.txt` (UTF-16, the compiler's format) from the Etesian tokens;
 `tools/build_skin.py` runs the host `akn_skin_desc_compiler` and `mifconv`.
 
-Licence: AGPL-3.0-only with additional terms (see `LICENSE`, `ADDITIONAL-TERMS.md`, `NOTICE`).
+Licence: AGPL-3.0-only with additional terms (see `LICENSE`, `ADDITIONAL-TERMS.md`, `NOTICE`). Fira Sans is SIL OFL 1.1 (`LICENSES/`).
