@@ -24,7 +24,10 @@
 
 const TUid KEtesianShellUid = { 0xE7016B52 };
 const TUid KDevMenuRepo = { 0xE7015A01 };
-const TUint32 KKeyShellId = 10, KKeyShellTries = 11, KKeyShellNote = 12;
+const TUint32 KKeyShellId = 10, KKeyShellTries = 11, KKeyShellNote = 12, KKeyOrientation = 13;
+_LIT(KOrAuto, "Automatic");
+_LIT(KOrPortrait, "Portrait");
+_LIT(KOrLandscape, "Landscape");
 _LIT(KIdEtesian, "etesian");
 _LIT(KIdS3, "symbian3");
 
@@ -89,11 +92,13 @@ public:
 		switch (aKey.iCode)
 			{
 			case EKeyUpArrow: if (iSel > 0) iSel--; break;
-			case EKeyDownArrow: if (iSel < 2) iSel++; break;
+			case EKeyDownArrow: if (iSel < 3) iSel++; break;
 			case EKeyEnter:
 			case EKeyDevice3:
-				if (iSel == 2)
+				if (iSel == 3)
 					Restart();
+				else if (iSel == 2)
+					CycleOrientation();
 				else
 					Choose(iSel);
 				return EKeyWasConsumed;
@@ -108,10 +113,15 @@ public:
 		if (aE.iType == TPointerEvent::EButton1Up)
 			{
 			TInt row = RowAt(aE.iPosition);
-			if (row == 2)
+			if (row == 3)
+				{
+				iSel = 3;
+				Restart();
+				}
+			else if (row == 2)
 				{
 				iSel = 2;
-				Restart();
+				CycleOrientation();
 				}
 			else if (row >= 0)
 				{
@@ -119,6 +129,38 @@ public:
 				Choose(row);
 				}
 			}
+		}
+	// the screen orientation the next start applies (core's pheshellsel): CenRep E7015A01 key 13, 0 Automatic | 1 Portrait | 2 Landscape
+	TInt Orientation() const
+		{
+		TInt v = 0;
+		CRepository* repo = NULL;
+		TRAPD(e, repo = CRepository::NewL(KDevMenuRepo));
+		if (e == KErrNone && repo)
+			{
+			if (repo->Get(KKeyOrientation, v) != KErrNone)
+				v = 0;
+			delete repo;
+			}
+		return v < 0 || v > 2 ? 0 : v;
+		}
+	void CycleOrientation()
+		{
+		const TInt next = (Orientation() + 1) % 3;
+		CRepository* repo = NULL;
+		TRAPD(e, repo = CRepository::NewL(KDevMenuRepo));
+		TInt r = e;
+		if (e == KErrNone && repo)
+			{
+			r = repo->Set(KKeyOrientation, next);
+			if (r == KErrNotFound)
+				r = repo->Create(KKeyOrientation, next);
+			delete repo;
+			}
+		RDebug::Printf("PH: [etesianshell] orientation %d: %d", next, r);
+		iResult = r;
+		iDone = ETrue;
+		DrawNow();
 		}
 	// the phone restarts through the starter, as the UI shell chooser in Settings does (ELanguageSwitchReset)
 	void Restart()
@@ -136,15 +178,13 @@ public:
 		}
 	TRect RowRect(TInt aRow) const
 		{
-		if (aRow == 2)		// the Restart button, at the bottom
-			return TRect(Rect().Width() / 12, Rect().Height() * 5 / 6, Rect().Width() - Rect().Width() / 12, Rect().Height() * 5 / 6 + Rect().Height() / 8);
 		const TInt w = Rect().Width(), h = Rect().Height();
-		const TInt rh = h / 6;
-		return TRect(w / 12, h / 3 + aRow * (rh + rh / 4), w - w / 12, h / 3 + aRow * (rh + rh / 4) + rh);
+		const TInt rh = h / 9, step = rh + rh / 4;
+		return TRect(w / 12, h * 27 / 100 + aRow * step, w - w / 12, h * 27 / 100 + aRow * step + rh);
 		}
 	TInt RowAt(const TPoint& aP) const
 		{
-		for (TInt i = 0; i < 3; i++)
+		for (TInt i = 0; i < 4; i++)
 			if (RowRect(i).Contains(aP))
 				return i;
 		return -1;
@@ -166,18 +206,24 @@ public:
 		TBuf<64> cur;
 		cur.Format(_L("Now: %S"), &iCurrent);
 		gc.DrawText(cur, TRect(w / 12, h / 6, w, h / 4), (h / 12 + f->AscentInPixels() - f->DescentInPixels()) / 2, CGraphicsContext::ELeft);
-		for (TInt i = 0; i < 3; i++)
+		for (TInt i = 0; i < 4; i++)
 			{
 			const TRect r = RowRect(i);
 			gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
-			gc.SetBrushColor(Rgb(i == 2 ? 0x1A3A6A : 0x1C1C1C));
+			gc.SetBrushColor(Rgb(i == 3 ? 0x1A3A6A : 0x1C1C1C));
 			gc.SetPenStyle(i == iSel ? CGraphicsContext::ESolidPen : CGraphicsContext::ENullPen);
 			gc.SetPenColor(Rgb(0x4591FF));
 			gc.SetPenSize(TSize(2, 2));
 			gc.DrawRoundRect(r, TSize(r.Height() / 4, r.Height() / 4));
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(0xFFFFFF));
-			TPtrC nm(i == 0 ? TPtrC(_L("Etesian")) : (i == 1 ? TPtrC(_L("Symbian^3 (stock)")) : TPtrC(_L("Restart now"))));
+			TBuf<48> orient;
+			if (i == 2)
+				{
+				const TInt o = Orientation();
+				orient.Format(_L("Screen: %S"), o == 1 ? &KOrPortrait : (o == 2 ? &KOrLandscape : &KOrAuto));
+				}
+			TPtrC nm(i == 0 ? TPtrC(_L("Etesian")) : (i == 1 ? TPtrC(_L("Symbian^3 (stock)")) : (i == 2 ? TPtrC(orient) : TPtrC(_L("Restart now")))));
 			const TBool active = i < 2 && iCurrent.CompareF(i == 0 ? TPtrC(KIdEtesian) : TPtrC(KIdS3)) == 0;
 			TBuf<48> line(nm);
 			if (active)
@@ -193,7 +239,7 @@ public:
 			msg.Format(_L("Not saved (error %d)"), iResult);
 		else
 			msg.Copy(_L("Pick a row. Takes effect at the next start."));
-		gc.DrawText(msg, TRect(w / 12, h * 3 / 4 - h / 24, w, h * 5 / 6 - h / 24), (h / 12 + f->AscentInPixels() - f->DescentInPixels()) / 2, CGraphicsContext::ELeft);
+		gc.DrawText(msg, TRect(w / 12, h * 3 / 4 + h / 14, w, h * 3 / 4 + h / 14 + h / 9), (h / 12 + f->AscentInPixels() - f->DescentInPixels()) / 2, CGraphicsContext::ELeft);
 		gc.DiscardFont();
 		}
 	void SetDone() { iDone = ETrue; }
