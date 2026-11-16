@@ -1,0 +1,5 @@
+*.sis
+*.skn
+*.mif
+*.mbm
+__pycache__/
