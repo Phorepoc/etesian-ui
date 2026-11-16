@@ -12,6 +12,20 @@ def which(n): return shutil.which(n) or os.path.join("/opt/symbian-hosttools", n
 def main(name, out):
     os.makedirs(out, exist_ok=True)
     tmp = tempfile.mkdtemp(); stage = os.path.join(tmp, "src"); shutil.copytree(SKIN, stage)
+    # the application icons of the theme: an APPICON block per application UID of skin/icons/mapping.txt (guide: SDCReader.cpp ParseAppIcon,
+    # "APPICON UID=<app uid>" then one bitmap source per line, "c16 <file>.svg SOFTMASK"); the item is EAknsMajorAppIcon / <uid>, what
+    # AknsUtils::CreateAppIconLC looks up first
+    mp = os.path.join(stage, "icons", "mapping.txt")
+    if os.path.isfile(mp):
+        blocks = ""
+        for line in open(mp, encoding="utf-8"):
+            parts = line.split()
+            if len(parts) == 2 and not line.startswith("#") and int(parts[0], 16) != 0 and os.path.isfile(os.path.join(stage, "icons", parts[1] + ".svg")):
+                blocks += "\nAPPICON UID=0x%s\n\tc16 icons/%s.svg SOFTMASK\nEND\n" % (parts[0], parts[1])
+        d = os.path.join(stage, name + ".txt")
+        raw = open(d, "rb").read()
+        enc = "utf-16" if raw[:2] in (bytes([0xFF, 0xFE]), bytes([0xFE, 0xFF])) else "latin-1"
+        open(d, "w", encoding=enc).write(raw.decode(enc) + blocks)
     os.environ.setdefault("EPOCROOT", tmp + "/")
     os.makedirs(os.path.join(tmp, "epoc32", "build", "s60", "icons", "temp", "tmp"), exist_ok=True)
     r = subprocess.run([which("akn_skin_desc_compiler"), "-m" + out, "-t" + out, name + ".txt", name], cwd=stage, capture_output=True, text=True, errors="replace")
