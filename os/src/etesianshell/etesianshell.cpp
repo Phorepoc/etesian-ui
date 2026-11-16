@@ -19,10 +19,7 @@
 #include <avkon.hrh>
 #include <centralrepository.h>
 #include <starterclient.h>
-#include <aknssrvclient.h>
-#include <aknspkgid.h>
-#include <aknsskininstance.h>
-#include <aknskinsinternalcrkeys.h>
+#include "../phedevmenu/pheshelltheme.h"
 #include <fbs.h>
 #include <bitdev.h>
 #include <gdi.h>
@@ -31,105 +28,16 @@
 const TUid KEtesianShellUid = { 0xE7016B52 };
 const TUid KDevMenuRepo = { 0xE7015A01 };
 const TUint32 KKeyShellId = 10, KKeyShellTries = 11, KKeyShellNote = 12, KKeyOrientation = 13;
-// the theme hook: Etesian's own theme is active while the Etesian shell is chosen; the theme that was active before is kept in the
-// developer-menu repository (key 15 = its package id as text, key 16 = its location) and put back when S^3 is chosen again
-const TUint32 KKeySavedThemeId = 15, KKeySavedThemeLoc = 16;
+// the theme hook (core's pheshelltheme.h, the same code pheshellsel's guard uses): Etesian's own theme is active while the Etesian shell is chosen;
+// the theme that was active before is kept (developer-menu repository keys 15 / 16) and put back when S^3 is chosen again or the guard falls back
 _LIT(KEtesianThemeName, "Etesian");
-
-// make aPid the active theme the way the Themes application does: the skin server's definition sets, then the Personalisation repository
-static TInt ActivateThemeL(const TAknsPkgID& aPid, TInt aLocation)
-	{
-	RAknsSrvSession srv;
-	CleanupClosePushL(srv);
-	User::LeaveIfError(srv.Connect());
-	TInt r = srv.SetAllDefinitionSets(aPid);
-	if (r == KErrNone)
-		{
-		TAknsPkgIDBuf buf;
-		aPid.CopyToDes(buf);
-		CRepository* skins = CRepository::NewLC(KCRUidPersonalisation);
-		skins->Set(KPslnActiveSkinUid, buf);
-		skins->Set(KPslnActiveSkinLocation, aLocation);
-		CleanupStack::PopAndDestroy(skins);
-		}
-	CleanupStack::PopAndDestroy(&srv);
-	return r;
-	}
-
-// the installed theme named aName: its package id and location
-static TInt FindThemeL(const TDesC& aName, TAknsPkgID& aPid, TInt& aLocation)
-	{
-	RAknsSrvSession srv;
-	CleanupClosePushL(srv);
-	User::LeaveIfError(srv.Connect());
-	CArrayPtr<CAknsSrvSkinInformationPkg>* skins = srv.EnumerateSkinPackagesL(EAknsSrvAll);
-	TInt r = KErrNotFound;
-	for (TInt i = 0; i < skins->Count(); i++)
-		if (skins->At(i)->Name().CompareF(aName) == 0)
-			{
-			aPid = skins->At(i)->PID();
-			TBuf<1> d;
-			d.CopyUC(skins->At(i)->IniFileDirectory().Left(1));
-			aLocation = d.CompareF(_L("e")) == 0 ? EAknsSrvMMC : EAknsSrvPhone;
-			r = KErrNone;
-			break;
-			}
-	skins->ResetAndDestroy();
-	delete skins;
-	CleanupStack::PopAndDestroy(&srv);
-	return r;
-	}
 
 static void SwitchThemeL(TBool aToEtesian)
 	{
-	CRepository* dev = CRepository::NewLC(KDevMenuRepo);
 	if (aToEtesian)
-		{
-		TAknsPkgID etesian;
-		TInt eloc = 0;
-		User::LeaveIfError(FindThemeL(KEtesianThemeName, etesian, eloc));
-		TBuf<64> saved;
-		const TInt have = dev->Get(KKeySavedThemeId, saved);
-		TAknsPkgIDBuf curBuf;
-		CRepository* skins = CRepository::NewLC(KCRUidPersonalisation);
-		TInt curLoc = 0;
-		skins->Get(KPslnActiveSkinUid, curBuf);
-		skins->Get(KPslnActiveSkinLocation, curLoc);
-		CleanupStack::PopAndDestroy(skins);
-		TAknsPkgIDBuf etBuf;
-		etesian.CopyToDes(etBuf);
-		// keep the previous theme once: not when Etesian is already the active theme, nor when one is already saved
-		if ((have != KErrNone || saved.Length() == 0) && curBuf.CompareF(etBuf) != 0)
-			{
-			TInt r = dev->Set(KKeySavedThemeId, curBuf);
-			if (r == KErrNotFound)
-				r = dev->Create(KKeySavedThemeId, curBuf);
-			r = dev->Set(KKeySavedThemeLoc, curLoc);
-			if (r == KErrNotFound)
-				dev->Create(KKeySavedThemeLoc, curLoc);
-			RDebug::Print(_L("PH: [etesianshell] theme %S saved"), &curBuf);
-			}
-		TInt r = ActivateThemeL(etesian, eloc);
-		RDebug::Printf("PH: [etesianshell] Etesian theme active: %d", r);
-		}
+		PheThemeEnterShellL(KEtesianThemeName);
 	else
-		{
-		TBuf<64> saved;
-		if (dev->Get(KKeySavedThemeId, saved) == KErrNone && saved.Length())
-			{
-			TAknsPkgID pid;
-			pid.SetFromDesL(saved);
-			TInt loc = 0;
-			dev->Get(KKeySavedThemeLoc, loc);
-			TInt r = ActivateThemeL(pid, loc);
-			RDebug::Print(_L("PH: [etesianshell] theme %S restored: %d"), &saved, r);
-			if (r == KErrNone)
-				dev->Set(KKeySavedThemeId, KNullDesC);
-			}
-		else
-			RDebug::Printf("PH: [etesianshell] no saved theme to restore");
-		}
-	CleanupStack::PopAndDestroy(dev);
+		PheThemeLeaveShellL();
 	}
 
 _LIT(KFiraRegular, "Fira Sans");
