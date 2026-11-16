@@ -22,6 +22,11 @@ FILES+=(--file "$OUT/etesian-dark.skn=!:/private/10207114/import/$UID_SKIN/etesi
 for ext in mif mbm; do
   [ -f "$OUT/etesian-dark.$ext" ] && FILES+=(--file "$OUT/etesian-dark.$ext=!:/resource/skins/$UID_SKIN/etesian-dark.$ext")
 done
+# Fira Sans (SIL OFL 1.1, Mozilla and Telefonica), unmodified, with its licence: the font store loads the fonts folder of every drive at start-up
+for f in FiraSans-Light FiraSans-Regular FiraSans-Bold; do
+  FILES+=(--file "$REPO/fonts/$f.ttf=!:/resource/fonts/$f.ttf")
+done
+FILES+=(--file "$REPO/fonts/OFL.txt=!:/resource/etesian/licences/OFL-FiraSans.txt")
 for f in "$REPO/LICENSES/Apache-2.0.txt" "$REPO/NOTICE"; do
   FILES+=(--file "$f=!:/resource/etesian/licences/$(basename "$f")")
 done
