@@ -56,7 +56,7 @@ public:
 		}
 	void Choose(TInt aRow)
 		{
-		const TDesC& id = aRow == 0 ? KIdEtesian : KIdS3;
+		TPtrC id(aRow == 0 ? TPtrC(KIdEtesian) : TPtrC(KIdS3));
 		CRepository* repo = NULL;
 		TRAPD(e, repo = CRepository::NewL(KDevMenuRepo));
 		TInt r = e;
@@ -152,7 +152,7 @@ public:
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(0xFFFFFF));
 			TPtrC nm(i == 0 ? TPtrC(_L("Etesian")) : TPtrC(_L("Symbian^3 (stock)")));
-			const TBool active = iCurrent.CompareF(i == 0 ? KIdEtesian : KIdS3) == 0;
+			const TBool active = iCurrent.CompareF(i == 0 ? TPtrC(KIdEtesian) : TPtrC(KIdS3)) == 0;
 			TBuf<48> line(nm);
 			if (active)
 				line.Append(_L("  (selected)"));
