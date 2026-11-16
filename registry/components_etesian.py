@@ -23,4 +23,6 @@ COMPONENTS = {
     "etesianshell": dict(mmp=os.path.join(os.path.dirname(_SRC), "etesianshell", "etesianshell.mmp"), sis=True),
     # the dialler: pilot of the shell-tagged apps
     "etesianphone": dict(mmp=os.path.join(os.path.dirname(_SRC), "etesianphone", "etesianphone.mmp"), sis=True),
+    # a test utility (set the active theme by name from the Terminal); not in the package
+    "etesiantheme": dict(mmp=os.path.join(os.path.dirname(_SRC), "etesiantheme", "etesiantheme.mmp"), sis=True),
 }
