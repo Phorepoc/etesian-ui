@@ -476,6 +476,13 @@ public:
 		// forwarded: Etesian's own Open apps view is a later rung.)
 		iMenuKey = iCoeEnv->RootWin().CaptureKeyUpAndDowns(EStdKeyApplication0, 0, 0, 5000);
 		RDebug::Printf("PH: [etesianhome] up (menu key capture %d)", iMenuKey);
+		// The idle application's contract with the start-up: when the idle screen is ready, publish KPSIdlePhase1Ok = EIdlePhase1Ok
+		// (KPSUidStartup 0x43 = 101; the stock idle does it in aifw / hsidlestate). The Phone app's recovery system waits for it before
+		// it signals the phone as started, and SSM stays at CriticalPhaseOK until then.
+		const TUid KPSUidStartupCat = { 0x101F8766 };
+		const TUint32 KPSIdlePhase1OkKey = 0x43;
+		TInt ir = RProperty::Set(KPSUidStartupCat, KPSIdlePhase1OkKey, 101);
+		RDebug::Printf("PH: [etesianhome] idle phase 1 ok published: %d", ir);
 		}
 	void HandleWsEventL(const TWsEvent& aEvent, CCoeControl* aDestination)
 		{
