@@ -19,4 +19,6 @@ _SRC = os.path.join(OS_ROOT, "src", "etesianhome")
 COMPONENTS = {
     "etesianlaunch": dict(mmp=os.path.join(_SRC, "etesianlaunch.mmp"), sis=True),
     "etesianhome": dict(mmp=os.path.join(_SRC, "etesianhome.mmp"), sis=True),
+    # "Etesian shell": the visible app that chooses the shell for the next start (CenRep key 10), no Control Panel plug-in needed
+    "etesianshell": dict(mmp=os.path.join(os.path.dirname(_SRC), "etesianshell", "etesianshell.mmp"), sis=True),
 }
