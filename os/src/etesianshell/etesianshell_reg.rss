@@ -1,0 +1,14 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+#include <appinfo.rh>
+#include <etesianshell.rsg>
+
+UID2 KUidAppRegistrationResourceFile
+UID3 0xE7016B52
+
+RESOURCE APP_REGISTRATION_INFO
+	{
+	app_file = "etesianshell";
+	localisable_resource_file = "\resource\apps\etesianshell";
+	localisable_resource_id = R_ETESIANSHELL_LOCALISABLE_APP_INFO;
+	}

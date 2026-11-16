@@ -26,5 +26,5 @@ for f in "$REPO/LICENSES/Apache-2.0.txt" "$REPO/NOTICE"; do
   FILES+=(--file "$f=!:/resource/etesian/licences/$(basename "$f")")
 done
 mkdir -p "$PHOREPOC_BUILD/sis"
-python3 "$PHOREPOC_PDK/tools/make_sis.py" etesianhome etesianlaunch --unsigned --name "Etesian" --vendor Phorepoc \
+python3 "$PHOREPOC_PDK/tools/make_sis.py" etesianhome etesianlaunch etesianshell --unsigned --name "Etesian" --vendor Phorepoc \
   --version "${PHOREPOC_PACKAGE_VERSION:-0.1.0}" "${FILES[@]}" --out "$PHOREPOC_BUILD/sis/etesian-ui-x32.sis"
