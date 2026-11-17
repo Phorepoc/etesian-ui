@@ -367,7 +367,9 @@ public:
 			if (info.iUid == KEtesianHomeUid || hide.Find(info.iUid.iUid) != KErrNotFound)
 				continue;
 			TApaAppCapabilityBuf cap;
-			if (iLs.GetAppCapability(cap, info.iUid) == KErrNone && cap().iAppIsHidden)
+			// hidden registrations are skipped, except the apps this shell's own .apps file names (managed, and not hidden by another shell)
+			const TBool own = managed.Find(info.iUid.iUid) != KErrNotFound && hide.Find(info.iUid.iUid) == KErrNotFound;
+			if (!own && iLs.GetAppCapability(cap, info.iUid) == KErrNone && cap().iAppIsHidden)
 				continue;
 			CEtApp* a = new (ELeave) CEtApp;
 			CleanupStack::PushL(a);
