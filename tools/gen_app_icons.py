@@ -16,6 +16,121 @@ APPS = [  # name, glyph, accent, application UID (0 = to fill in from the image'
     ("calculator", "grid", "#ED9507", 0x10005902), ("notes", "edit", "#F2B111", 0x10005907), ("email", "mail", "#0067BC", 0),
     ("bluetooth", "bluetooth", "#1C51AF", 0x10005951), ("search", "search", "#4591FF", 0x10282411), ("logs", "list", "#62B700", 0x101F4CD5), ("radio", "speaker", "#FF8500", 0x10207A89)]
 
+import re as _re
+
+def _arc_to_cubics(x1, y1, rx, ry, phi, fa, fs, x2, y2):
+    """SVG elliptical arc -> a list of cubic Beziers [(c1x, c1y, c2x, c2y, x, y), ...] (the implementation notes of the SVG spec, F.6)."""
+    if rx == 0 or ry == 0 or (x1 == x2 and y1 == y2):
+        return [(x1, y1, x2, y2, x2, y2)]
+    rx, ry = abs(rx), abs(ry)
+    ph = math.radians(phi)
+    cp, sp = math.cos(ph), math.sin(ph)
+    dx, dy = (x1 - x2) / 2, (y1 - y2) / 2
+    x1p, y1p = cp * dx + sp * dy, -sp * dx + cp * dy
+    lam = x1p ** 2 / rx ** 2 + y1p ** 2 / ry ** 2
+    if lam > 1:
+        rx, ry = rx * math.sqrt(lam), ry * math.sqrt(lam)
+    num = rx ** 2 * ry ** 2 - rx ** 2 * y1p ** 2 - ry ** 2 * x1p ** 2
+    den = rx ** 2 * y1p ** 2 + ry ** 2 * x1p ** 2
+    co = math.sqrt(max(0.0, num / den)) if den else 0.0
+    if fa == fs:
+        co = -co
+    cxp, cyp = co * rx * y1p / ry, -co * ry * x1p / rx
+    cx, cy = cp * cxp - sp * cyp + (x1 + x2) / 2, sp * cxp + cp * cyp + (y1 + y2) / 2
+    def ang(ux, uy, vx, vy):
+        a = math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+        return a
+    th1 = ang(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry)
+    dth = ang((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry)
+    if not fs and dth > 0:
+        dth -= 2 * math.pi
+    elif fs and dth < 0:
+        dth += 2 * math.pi
+    n = max(1, int(math.ceil(abs(dth) / (math.pi / 2) - 1e-9)))
+    step = dth / n
+    out = []
+    t = 4.0 / 3.0 * math.tan(step / 4)
+    a = th1
+    for _ in range(n):
+        ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(a + step), math.sin(a + step)
+        pts = [(ca - t * sa, sa + t * ca), (cb + t * sb, sb - t * cb), (cb, sb)]
+        seg = []
+        for ux, uy in pts:
+            ux, uy = ux * rx, uy * ry
+            seg += [cp * ux - sp * uy + cx, sp * ux + cp * uy + cy]
+        out.append(tuple(seg))
+        a += step
+    return out
+
+def normalize_path(d):
+    """A path d string -> absolute M / L / C / Z only (arcs become cubic curves, H / V / relative commands and Q become lines or cubics):
+    what the SVG-Tiny encoder of the skin tools accepts everywhere."""
+    toks = _re.findall(r'[MmLlHhVvCcSsQqTtAaZz]|-?\d*\.?\d+(?:[eE][-+]?\d+)?', d)
+    i, out, cmd = 0, [], None
+    x = y = sx = sy = 0.0
+    lcx = lcy = None
+    def num():
+        nonlocal i
+        v = float(toks[i]); i += 1
+        return v
+    def flag():
+        nonlocal i
+        t = toks[i]
+        if len(t) > 1 and t[0] in '01' and not t.startswith('0.'):
+            toks[i] = t[1:]
+            return float(t[0])
+        i += 1
+        return float(t)
+    while i < len(toks):
+        if _re.match(r'[A-Za-z]', toks[i]):
+            cmd = toks[i]; i += 1
+            if cmd in 'Zz':
+                out.append('Z'); x, y = sx, sy
+                continue
+        rel = cmd.islower()
+        c = cmd.upper()
+        if c == 'M':
+            nx, ny = num(), num()
+            if rel: nx, ny = x + nx, y + ny
+            out.append('M%.3f %.3f' % (nx, ny)); x, y, sx, sy = nx, ny, nx, ny
+            cmd = 'l' if rel else 'L'
+        elif c == 'L':
+            nx, ny = num(), num()
+            if rel: nx, ny = x + nx, y + ny
+            out.append('L%.3f %.3f' % (nx, ny)); x, y = nx, ny
+        elif c == 'H':
+            nx = num() + (x if rel else 0)
+            out.append('L%.3f %.3f' % (nx, y)); x = nx
+        elif c == 'V':
+            ny = num() + (y if rel else 0)
+            out.append('L%.3f %.3f' % (x, ny)); y = ny
+        elif c == 'C':
+            v = [num() for _ in range(6)]
+            if rel: v = [v[0]+x, v[1]+y, v[2]+x, v[3]+y, v[4]+x, v[5]+y]
+            out.append('C' + ' '.join('%.3f' % t for t in v)); lcx, lcy = v[2], v[3]; x, y = v[4], v[5]
+        elif c == 'S':
+            v = [num() for _ in range(4)]
+            if rel: v = [v[0]+x, v[1]+y, v[2]+x, v[3]+y]
+            c1x, c1y = (2*x - lcx, 2*y - lcy) if lcx is not None else (x, y)
+            out.append('C%.3f %.3f %.3f %.3f %.3f %.3f' % (c1x, c1y, v[0], v[1], v[2], v[3])); lcx, lcy = v[0], v[1]; x, y = v[2], v[3]
+        elif c == 'Q':
+            v = [num() for _ in range(4)]
+            if rel: v = [v[0]+x, v[1]+y, v[2]+x, v[3]+y]
+            out.append('C%.3f %.3f %.3f %.3f %.3f %.3f' % (x + 2/3*(v[0]-x), y + 2/3*(v[1]-y), v[2] + 2/3*(v[0]-v[2]), v[3] + 2/3*(v[1]-v[3]), v[2], v[3])); x, y = v[2], v[3]
+        elif c == 'A':
+            rx, ry, phi = num(), num(), num()
+            fa, fs = flag(), flag()
+            nx, ny = num(), num()
+            if rel: nx, ny = x + nx, y + ny
+            for seg in _arc_to_cubics(x, y, rx, ry, phi, int(fa), int(fs), nx, ny):
+                out.append('C' + ' '.join('%.3f' % t for t in seg))
+            x, y = nx, ny
+        else:
+            raise ValueError('path command ' + cmd)
+        if c not in 'CSQ':
+            lcx = lcy = None
+    return ''.join(out)
+
 def squircle(n=2.8, r=46.0, c=50.0, pts=72):
     out = []
     for i in range(pts):
@@ -39,7 +154,7 @@ def main(ts, out):
     sq = squircle()
     lines = ["# application UID (hex) -> icon name; generated by gen_app_icons.py"]
     for name, glyph, acc, uid in APPS:
-        d = glyphs[glyph]
+        d = normalize_path(glyphs[glyph])
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">'
                '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="%s"/><stop offset="1" stop-color="%s"/></linearGradient></defs>'
                '<path d="%s" fill="url(#g)" stroke="%s" stroke-width="1.4"/>'
