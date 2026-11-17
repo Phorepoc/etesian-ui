@@ -131,7 +131,7 @@ def normalize_path(d):
             lcx = lcy = None
     return ''.join(out)
 
-def flatten_path(d, steps=10):
+def flatten_path(d, steps=4):
     """normalize_path output (M / L / C / Z) -> M / L / Z only: the skin's SVG-Tiny encoder draws straight stroked segments reliably and
     drops stroke-only curves (found on QEMU: the glyphs with curves came out as empty tiles), so every cubic becomes `steps` short lines."""
     out = []
@@ -154,7 +154,7 @@ def flatten_path(d, steps=10):
             x, y = x3, y3
     return ''.join(out)
 
-def squircle(n=2.8, r=46.0, c=50.0, pts=72):
+def squircle(n=2.8, r=46.0, c=50.0, pts=32):
     out = []
     for i in range(pts):
         a = 2 * math.pi * i / pts
