@@ -8,6 +8,9 @@ UID3 0xE7016B53
 
 RESOURCE APP_REGISTRATION_INFO
 	{
+	// registered hidden: the S^3 menu (matrixmenu) honours that, not the Uikon hidden list; the Etesian shell shows the app itself because
+	// shell/etesian.apps names it (Home takes the apps of its own shell even when apparc calls them hidden)
+	hidden = KAppIsHidden;
 	app_file = "etesianphone";
 	localisable_resource_file = "\resource\apps\etesianphone";
 	localisable_resource_id = R_ETESIANPHONE_LOCALISABLE_APP_INFO;
