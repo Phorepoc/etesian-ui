@@ -19,7 +19,7 @@ for t in apps hides assoc; do
   FILES+=(--file "$REPO/shell/etesian.$t=!:/resource/phe/shells/etesian.$t")
 done
 for f in "$REPO/LICENSES/AGPL-3.0-only.txt" "$REPO/NOTICE"; do
-  FILES+=(--file "$f=!:/resource/etesian/licences/$(basename "$f")")
+  FILES+=(--file "$f=!:/resource/etesian/ui/licences/$(basename "$f")")
 done
 mkdir -p "$PHOREPOC_BUILD/sis"
 # shellcheck disable=SC2086
