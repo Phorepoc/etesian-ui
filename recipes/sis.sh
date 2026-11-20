@@ -13,7 +13,10 @@ set -eu
 ARCH=${PHOREPOC_ARCH:-x32}
 case "$ARCH" in arm) AFL=--arm;; x32) AFL=;; *) echo "ARCH must be arm or x32 (got $ARCH)"; exit 1;; esac
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-: "${PHE_PALETTE:?set PHE_PALETTE to ThirdPartyBitmap.pal}"
+# the S60 palette from the Symbian source the build already has (PHOREPOC_SYMBIAN); PHE_PALETTE overrides
+PHE_PALETTE=${PHE_PALETTE:-${PHOREPOC_SYMBIAN:-}/oss.FCL.sf.mw.uitools/uitools_pub/third_party_bitmap_palette_api/inc/ThirdPartyBitmap.pal}
+[ -f "$PHE_PALETTE" ] || { echo "no ThirdPartyBitmap.pal at $PHE_PALETTE (set PHE_PALETTE)"; exit 1; }
+export PHE_PALETTE
 export PHE_SVGTENC=${PHE_SVGTENC:-$PHOREPOC_PDK/tools/svgtenc/svgtbinencode}
 UID_SKIN=E7016B31
 OUT=$PHOREPOC_BUILD/skin-gen
