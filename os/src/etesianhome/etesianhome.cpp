@@ -204,6 +204,7 @@ public:
 		iApps.ResetAndDestroy();
 		iLs.Close();
 		ReleaseFonts();
+		RemoveFontFiles();
 		}
 	void ConstructL(const TRect& aRect)
 		{
@@ -270,8 +271,40 @@ public:
 			f = NULL;
 		return f;
 		}
+	// Fira Sans lives in \resource\etesian\fonts, not \resource\fonts: the font store holds every file of that folder open from boot,
+	// and the installer then cannot remove the package (-14). Home adds the files to the font store while it runs and removes them on exit.
+	void AddFontFiles()
+		{
+		if (iFontFiles)
+			return;
+		_LIT(KDir, "\\resource\\etesian\\fonts\\");
+		_LIT(KLight, "FiraSans-Light.ttf");
+		_LIT(KRegular, "FiraSans-Regular.ttf");
+		_LIT(KBold, "FiraSans-Bold.ttf");
+		const TDesC* names[3] = { &KLight, &KRegular, &KBold };
+		TFileName self = RProcess().FileName();
+		for (TInt i = 0; i < 3; i++)
+			{
+			TFileName p;
+			p.Append(self.Left(2));	// the drive the package is installed on
+			p.Append(KDir);
+			p.Append(*names[i]);
+			TInt id = 0;
+			TInt r = iCoeEnv->ScreenDevice()->AddFile(p, id);
+			RDebug::Print(_L("PH: [etesianhome] font file %S: %d (id %d)"), &p, r, id);
+			if (r == KErrNone)
+				iFontIds[iFontFiles++] = id;
+			}
+		}
+	void RemoveFontFiles()
+		{
+		for (TInt i = 0; i < iFontFiles; i++)
+			iCoeEnv->ScreenDevice()->RemoveFile(iFontIds[i]);
+		iFontFiles = 0;
+		}
 	void MakeFonts()
 		{
+		AddFontFiles();
 		iF[EFLabel] = MakeFont(KFiraRegular, Sc(13), EFalse);		// small: labels
 		iF[EFBody] = MakeFont(KFiraLight, Sc(16), EFalse);		// default: body
 		iF[EFTitle] = MakeFont(KFiraRegular, Sc(16), ETrue);		// events: titles 16 bold
@@ -1294,6 +1327,8 @@ private:
 	CPeriodic* iHoldTimer = NULL;
 	CFont* iF[EFCount];
 	TBool iOwnFonts = EFalse;
+	TInt iFontIds[3];
+	TInt iFontFiles = 0;
 	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0, iMargin = 0;
 	TInt iCardCols = 2, iCardW = 0, iCardH = 0, iGap = 0, iClosingWg = 0, iPrevW = 0, iPrevH = 0, iXSize = 0, iBtnW = 0, iBtnH = 0, iEvSize = 0;
 	TInt iPage = EPageApps, iMissed = 0, iUnread = 0;
