@@ -1,19 +1,18 @@
-# Phorepoc Etesian (S60 port)
+# Etesian shell
 
-The [Etesian](https://github.com/etesian-design/design) design language (the N9's look, re-envisioned) for the Symbian^3 UI,
-installable from the Catalogue as a SIS. It is **not** part of the base image and nothing in the phone needs it: remove it and
-the stock theme is back.
+An early second shell for the Symbian^3 UI in the [Etesian](https://github.com/etesian-design/design) design language (the N9's look,
+re-envisioned): a home screen with an app grid, Open apps and an events page, and a dialler. It installs on top of the standard UI
+(Catalogue: `etesian-ui`) and nothing in the phone needs it.
 
-Status: early. This repo will become `etesian-ui`, the full Etesian shell (own home/launcher/switcher on Avkon, installed as a shell through core's shell selector like orbit-ui and hildon-ui). So far it holds the skin asset: `etesian-x32.sis` is a data-only package with one skin ("Etesian", dark mode): Etesian colour
-tables (white-on-black text, the default accent `#4591FF`, warning red) and flat black screen / status-bar backgrounds. Items it
-does not define fall back to the base skin. Not yet booted on an image; see the port plan in the private notes for the phases
-(light/dark variants, squircle frames, icons, Fira type, layout pack, shell companions).
+- Open the **Etesian shell** app, pick Etesian and restart. Pick Symbian^3 the same way to go back.
+- If Etesian does not start twice in a row, the phone falls back to Symbian^3 by itself.
+- Choosing the shell activates the **Etesian theme** and switching back restores the theme you had. The theme and its typeface (Fira Sans)
+  are not part of this package: the Phorepoc OS images carry them
+  ([etesian-theme](https://github.com/Phorepoc/etesian-theme), built into the ROM); on other phones install the "Etesian theme" package first.
+- Removing the package removes the shell. Remove it while Symbian^3 is chosen if you can; if Etesian is running the phone falls back to Symbian^3.
 
-Build (the pdk's package.yml does this from `package.conf`; locally in a `ghcr.io/phorepoc/base` container):
+Build (the pdk's package.yml does this from `package.conf`; `release.yml` publishes `etesian-ui-arm.sis` and `etesian-ui-x32.sis`):
 
-    PHE_PALETTE=<ThirdPartyBitmap.pal> PHOREPOC_PDK=<pdk> PHOREPOC_BUILD=<out> bash recipes/sis.sh
+    PHOREPOC_PDK=<pdk> PHOREPOC_BUILD=<out> bash recipes/sis.sh
 
-`tools/gen_descriptor.py` writes `skin/etesian-dark.txt` (UTF-16, the compiler's format) from the Etesian tokens;
-`tools/build_skin.py` runs the host `akn_skin_desc_compiler` and `mifconv`.
-
-Licence: Apache-2.0 (see `LICENSES/`, `NOTICE`). Etesian tokens are MIT.
+Licence: Apache-2.0 (see `LICENSES/`, `NOTICE`).

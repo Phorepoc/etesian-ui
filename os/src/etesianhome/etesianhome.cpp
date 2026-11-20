@@ -20,7 +20,6 @@
 // It is the shell's idle application (etesianlaunch.exe starts it; the selector publishes its UID as the active idle application) and,
 // like the stock idle, publishes KPSIdlePhase1Ok when it is up. Sizes are in dp of a 320 dp wide reference (the shorter screen side).
 #include <e32debug.h>
-#include <f32file.h>
 #include <e32math.h>
 #include <e32property.h>
 #include <eikstart.h>
@@ -205,7 +204,6 @@ public:
 		iApps.ResetAndDestroy();
 		iLs.Close();
 		ReleaseFonts();
-		RemoveFontFiles();
 		}
 	void ConstructL(const TRect& aRect)
 		{
@@ -272,65 +270,8 @@ public:
 			f = NULL;
 		return f;
 		}
-	// Fira Sans is installed in \resource\etesian\fonts, not \resource\fonts: the font store holds every file of that folder open from
-	// boot, and the installer then cannot remove the package (-14). The font store would also hold a file given to AddFile open while Home
-	// runs, and the installer does not close Home. So Home copies the three files to \system\temp\etesian\ on the system drive, gives the
-	// copies to the font store and removes copy and registration on exit: the installed files are never open.
-	void AddFontFiles()
-		{
-		if (iFontFiles)
-			return;
-		_LIT(KDir, "\\resource\\etesian\\fonts\\");
-		_LIT(KTmp, "c:\\system\\temp\\etesian\\");
-		_LIT(KLight, "FiraSans-Light.ttf");
-		_LIT(KRegular, "FiraSans-Regular.ttf");
-		_LIT(KBold, "FiraSans-Bold.ttf");
-		const TDesC* names[3] = { &KLight(), &KRegular(), &KBold() };
-		RFs& fs = iCoeEnv->FsSession();
-		fs.MkDirAll(KTmp);
-		CFileMan* fm = NULL;
-		TRAPD(fmErr, fm = CFileMan::NewL(fs));
-		if (fmErr != KErrNone)
-			return;
-		TFileName self = RProcess().FileName();
-		for (TInt i = 0; i < 3; i++)
-			{
-			TFileName src;
-			src.Append(self.Left(2));	// the drive the package is installed on
-			src.Append(KDir);
-			src.Append(*names[i]);
-			TFileName dst(KTmp);
-			dst.Append(*names[i]);
-			TInt r = fm->Copy(src, dst, CFileMan::EOverWrite);
-			TInt id = 0;
-			if (r == KErrNone)
-				r = iCoeEnv->ScreenDevice()->AddFile(dst, id);
-			RDebug::Print(_L("PH: [etesianhome] font file %S: %d (id %d)"), &dst, r, id);
-			if (r == KErrNone)
-				iFontIds[iFontFiles++] = id;
-			}
-		delete fm;
-		}
-	void RemoveFontFiles()
-		{
-		for (TInt i = 0; i < iFontFiles; i++)
-			iCoeEnv->ScreenDevice()->RemoveFile(iFontIds[i]);
-		if (iFontFiles)
-			{
-			CFileMan* fm = NULL;
-			TRAPD(fmErr, fm = CFileMan::NewL(iCoeEnv->FsSession()));
-			if (fmErr == KErrNone)
-				{
-				_LIT(KAll, "c:\\system\\temp\\etesian\\*.ttf");
-				fm->Delete(KAll);
-				delete fm;
-				}
-			}
-		iFontFiles = 0;
-		}
 	void MakeFonts()
 		{
-		AddFontFiles();
 		iF[EFLabel] = MakeFont(KFiraRegular, Sc(13), EFalse);		// small: labels
 		iF[EFBody] = MakeFont(KFiraLight, Sc(16), EFalse);		// default: body
 		iF[EFTitle] = MakeFont(KFiraRegular, Sc(16), ETrue);		// events: titles 16 bold
@@ -1353,8 +1294,6 @@ private:
 	CPeriodic* iHoldTimer = NULL;
 	CFont* iF[EFCount];
 	TBool iOwnFonts = EFalse;
-	TInt iFontIds[3];
-	TInt iFontFiles = 0;
 	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0, iMargin = 0;
 	TInt iCardCols = 2, iCardW = 0, iCardH = 0, iGap = 0, iClosingWg = 0, iPrevW = 0, iPrevH = 0, iXSize = 0, iBtnW = 0, iBtnH = 0, iEvSize = 0;
 	TInt iPage = EPageApps, iMissed = 0, iUnread = 0;
