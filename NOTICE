@@ -7,8 +7,7 @@ by Kyriakos Bompotis", section 7(e) names and logos (TRADEMARKS.md), and the Pho
 terms as the upstream Etesian Design Language, https://github.com/Etesian-design/design/blob/main/ADDITIONAL-TERMS.md,
 from which this work's design, tokens, colours and icon glyphs are derived.
 
-Fira Sans (fonts/), Copyright 2012-2016 The Mozilla Foundation, Telefonica S.A., SIL Open Font License 1.1, unmodified (fonts/OFL.txt).
-The skin descriptor's table layout follows the Symbian skin format (2010 Symbian Foundation release, EPL-1.0); no artwork from it is used.
+The theme, icons and typeface are in the etesian-theme repository.
 No Nokia fonts, icons or artwork are included.
 
 ----------------------------------------------------------------------------------------------------
