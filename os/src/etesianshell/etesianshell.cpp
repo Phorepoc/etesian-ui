@@ -17,6 +17,7 @@
 #include <eikenv.h>
 #include <eikappui.h>
 #include <avkon.hrh>
+#include <aknnotewrappers.h>
 #include <centralrepository.h>
 #include <starterclient.h>
 #include "../phedevmenu/pheshelltheme.h"
@@ -32,10 +33,41 @@ const TUint32 KKeyShellId = 10, KKeyShellTries = 11, KKeyShellNote = 12, KKeyOri
 // the theme that was active before is kept (developer-menu repository keys 15 / 16) and put back when S^3 is chosen again or the guard falls back
 _LIT(KEtesianThemeName, "Etesian");
 
+// the Etesian theme (UID E7016B31) is in the skins of the device: Phorepoc OS 0.12 and newer carry it in the image. Looked up by the UID
+// of the skin package (and by its name, the same skin); an older image has neither and the current theme stays.
+const TUint32 KEtesianSkinUid = 0xE7016B31;
+static TBool EtesianThemeInstalledL()
+	{
+	RAknsSrvSession srv;
+	CleanupClosePushL(srv);
+	User::LeaveIfError(srv.Connect());
+	CArrayPtr<CAknsSrvSkinInformationPkg>* skins = srv.EnumerateSkinPackagesL(EAknsSrvAll);
+	TBool found = EFalse;
+	for (TInt i = 0; i < skins->Count() && !found; i++)
+		found = skins->At(i)->PID().iNumber == static_cast<TInt>(KEtesianSkinUid) || skins->At(i)->Name().CompareF(KEtesianThemeName) == 0;
+	skins->ResetAndDestroy();
+	delete skins;
+	CleanupStack::PopAndDestroy(&srv);
+	return found;
+	}
+
 static void SwitchThemeL(TBool aToEtesian)
 	{
 	if (aToEtesian)
+		{
+		TBool have = EFalse;
+		TRAP_IGNORE(have = EtesianThemeInstalledL());
+		if (!have)
+			{
+			// one note, and the theme in use stays: everything else about the shell works as usual
+			RDebug::Printf("PH: [etesianshell] no Etesian theme on this device: current theme kept");
+			_LIT(KNeedNewer, "The Etesian theme needs Phorepoc OS 0.12 or newer");
+			CAknInformationNote* note = new (ELeave) CAknInformationNote(ETrue);
+			note->ExecuteLD(KNeedNewer);
+			return;
+			}
 		PheThemeEnterShellL(KEtesianThemeName);
+		}
 	else
 		PheThemeLeaveShellL();
 	}
