@@ -8,7 +8,7 @@ name: release
 
 on:
   push:
-    branches: [main, ci-release]
+    branches: [main]
     paths-ignore: ["**.md"]
   workflow_dispatch:
 
