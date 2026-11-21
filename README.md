@@ -9,7 +9,7 @@ re-envisioned): a home screen with an app grid, Open apps and an events page, an
 - Choosing the shell activates the **Etesian theme** and switching back restores the theme you had. The theme and its typeface (Fira Sans)
   are not part of this package: the Phorepoc OS images carry them
   ([etesian-theme](https://github.com/Phorepoc/etesian-theme), built into the ROM); on other phones install the "Etesian theme" package first.
-- Removing the package removes the shell. Remove it while Symbian^3 is chosen if you can; if Etesian is running the phone falls back to Symbian^3.
+- Removing the package removes the shell, also while Etesian is running (the phone then shows Symbian^3); switching back first is still the tidy way.
 
 Build (the pdk's package.yml does this from `package.conf`; `release.yml` publishes `etesian-ui-arm.sis` and `etesian-ui-x32.sis`):
 
