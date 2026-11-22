@@ -265,6 +265,7 @@ public:
 		delete iSignal;
 		delete iClock;
 		delete iWatch;
+		delete iPreviewTimer;
 		delete iMenuTimer;
 		delete iCloseTimer;
 		delete iHoldTimer;
@@ -284,6 +285,8 @@ public:
 		User::LeaveIfError(iLs.Connect());
 		LoadAppsL();
 		iWatch = CPeriodic::NewL(CActive::EPriorityLow);
+		iPreviewTimer = CPeriodic::NewL(CActive::EPriorityLow);
+		TRAP_IGNORE(Window().EnableAdvancedPointers());
 		iClock = CPeriodic::NewL(CActive::EPriorityLow);
 		iClock->Start(15000000, 15000000, TCallBack(ClockTick, this));
 		TRAP_IGNORE(iSignal = CEtSignal::NewL(*this));
@@ -317,7 +320,7 @@ public:
 		iEvSize = evt;
 		iXSize = 0;
 		// Open apps: cards, 2 per row in portrait (the default), 4 in landscape; the preview keeps the screen's aspect
-		iCardCols = iW > iH ? 4 : 2;
+		iCardCols = iCardLevel > 0 ? iCardLevel : (iW > iH ? 4 : 2);
 		iGap = iMargin;
 		iCardW = (iW - (iCardCols + 1) * iGap) / iCardCols;
 		iPrevW = iCardW - Sc(12);
@@ -815,6 +818,35 @@ public:
 			}
 		CleanupStack::PopAndDestroy(tl);
 		RDebug::Printf("PH: [etesianhome] open apps: %d (%d skipped by the stock rules)", iCards.Count(), skipped);
+		}
+	// ---- Open apps: pinch levels (guide 20-phone: carousel, 2, 3 and 4 per row). A pinch out zooms in (fewer, larger cards), a pinch in zooms out.
+	void SetCardLevel(TInt aLevel)
+		{
+		if (aLevel < 1) aLevel = 1;
+		if (aLevel > 4) aLevel = 4;
+		if (aLevel == iCardCols && iCardLevel == aLevel)
+			return;
+		iCardLevel = aLevel;
+		Layout(Rect());
+		iScroll = 0;
+		DrawNow();
+		RDebug::Printf("PH: [etesianhome] Open apps level: %d per row", iCardCols);
+		}
+	void PinchStep(TInt aDirection)		// +1 = zoom in (fewer columns)
+		{
+		SetCardLevel(iCardCols - aDirection);
+		}
+	// the preview of the application in front is taken every 2.5 s while Home is in the background, so every card has one
+	void WatchPreviews(TBool aOn)
+		{
+		iPreviewTimer->Cancel();
+		if (aOn)
+			iPreviewTimer->Start(2500000, 2500000, TCallBack(PreviewTick, this));
+		}
+	static TInt PreviewTick(TAny* aThis)
+		{
+		static_cast<CEtHomeContainer*>(aThis)->CaptureForeground();
+		return 0;
 		}
 	// after a swipe closed the front application: its window group goes a moment later, so the Open apps list is read again until it has
 	void WatchOpenApps()
@@ -1377,6 +1409,11 @@ public:
 				return EKeyWasNotConsumed;
 			return EKeyWasConsumed;
 			}
+		if (iPage == EPageOpen && aKey.iCode >= '1' && aKey.iCode <= '4')
+			{
+			SetCardLevel(aKey.iCode - '0');
+			return EKeyWasConsumed;
+			}
 		const TInt cols = Cols();
 		if (Items() == 0)
 			{
@@ -1453,6 +1490,36 @@ public:
 		}
 	void HandlePointerEventL(const TPointerEvent& aE)
 		{
+		const TAdvancedPointerEvent* adv = aE.AdvancedPointerEvent();
+		if (adv && adv->PointerNumber() > 0 && adv->PointerNumber() < 2 + 0 && iPage == EPageOpen)
+			{
+			const TInt n = adv->PointerNumber();
+			iPinch[n] = aE.iPosition;
+			iPinchDown[n] = aE.iType != TPointerEvent::EButton1Up;
+			return;
+			}
+		if (adv && iPage == EPageOpen && adv->PointerNumber() == 0)
+			{
+			iPinch[0] = aE.iPosition;
+			iPinchDown[0] = aE.iType != TPointerEvent::EButton1Up;
+			if (iPinchDown[0] && iPinchDown[1])
+				{
+				const TInt dx = iPinch[0].iX - iPinch[1].iX, dy = iPinch[0].iY - iPinch[1].iY;
+				const TInt dist = dx * dx + dy * dy;
+				if (iPinchStart == 0)
+					iPinchStart = dist;
+				else if (!iPinchDone && dist * 10 > iPinchStart * 18)
+					{ iPinchDone = ETrue; PinchStep(+1); }
+				else if (!iPinchDone && dist * 10 < iPinchStart * 5)
+					{ iPinchDone = ETrue; PinchStep(-1); }
+				return;
+				}
+			if (!iPinchDown[1])
+				{
+				iPinchStart = 0;
+				iPinchDone = EFalse;
+				}
+			}
 		switch (aE.iType)
 			{
 			case TPointerEvent::EButton1Down:
@@ -1648,6 +1715,10 @@ private:
 	CFbsBitmap iXBmp, iXMask;			// the red close squircle
 	CPeriodic* iClock = NULL;
 	CPeriodic* iWatch = NULL;
+	CPeriodic* iPreviewTimer = NULL;
+	TPoint iPinch[2];
+	TBool iPinchDown[2] = { EFalse, EFalse }, iPinchDone = EFalse;
+	TInt iPinchStart = 0;
 	TInt iWatchLeft = 0;
 	CPeriodic* iMenuTimer = NULL;
 	CPeriodic* iCloseTimer = NULL;
@@ -1660,6 +1731,7 @@ private:
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
 	TPoint iDownPos;
 	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse, iEdit = EFalse, iHeld = EFalse;
+	TInt iCardLevel = 0;		// the Open apps zoom level set by a pinch or the keys 1..4 (0 = the default for the orientation)
 	TInt iBatt = -1, iBars = -1;		// battery level 0..7 (HWRM power state), signal bars (CTelephony); -1 = unknown
 	TBool iCharging = EFalse, iStatusMenu = EFalse, iEditApps = EFalse;
 	TInt iDragApp = -1;
@@ -2511,6 +2583,8 @@ public:
 	void HandleForegroundEventL(TBool aForeground)
 		{
 		CAknAppUi::HandleForegroundEventL(aForeground);
+		if (iView)
+			iView->WatchPreviews(!aForeground);
 		if (aForeground)
 			NoSoftNotes();
 		if (iEdges)
