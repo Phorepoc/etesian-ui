@@ -157,6 +157,7 @@ public:
 	CApaMaskedBitmap* iIcon = NULL;
 	CFbsBitmap* iBmp = NULL;		// the skin-aware (MIF / SVG) app icon and its mask, sized for the tile
 	CFbsBitmap* iMask = NULL;
+	TBool iIsSq = EFalse;		// the icon's own mask is already a squircle (see IsSquircleMask)
 	};
 
 // the last frame of an application, copied from the screen when the Menu key went down while it was in front
@@ -408,10 +409,19 @@ public:
 		TRAPD(ie, AknsUtils::CreateAppIconLC(AknsUtils::SkinInstance(), aApp.iUid, EAknsAppIconTypeList, bmp, mask); CleanupStack::Pop(2));
 		if (ie == KErrNone && bmp)
 			{
-			const TSize g(iTile * 62 / 100, iTile * 62 / 100);
-			AknIconUtils::SetSize(bmp, g, EAspectRatioPreserved);
+			// first at the full tile size (the icon bare), to look at its mask; with the squircle setting on and a mask that is not one, the icon shrinks into the lit tile
+			const TSize full(iTile, iTile);
+			AknIconUtils::SetSize(bmp, full, EAspectRatioPreserved);
 			if (mask)
-				AknIconUtils::SetSize(mask, g, EAspectRatioPreserved);
+				AknIconUtils::SetSize(mask, full, EAspectRatioPreserved);
+			aApp.iIsSq = IsSquircleMask(mask, aApp.iUid.iUid);
+			if (ShapeAll() && !aApp.iIsSq)
+				{
+				const TSize g(iTile * 62 / 100, iTile * 62 / 100);
+				AknIconUtils::SetSize(bmp, g, EAspectRatioPreserved);
+				if (mask)
+					AknIconUtils::SetSize(mask, g, EAspectRatioPreserved);
+				}
 			aApp.iBmp = bmp;
 			aApp.iMask = mask;
 			}
@@ -424,7 +434,107 @@ public:
 				delete aApp.iIcon;
 				aApp.iIcon = NULL;
 				}
+			else
+				aApp.iIsSq = IsSquircleMask(aApp.iIcon->Mask(), aApp.iUid.iUid);
 			}
+		}
+	// the setting "Shape all icons as squircles" of the Etesian shell app (CenRep E7015A01 key 22; off by default): off = every icon is drawn as
+	// the theme or the application provides it; on = an icon whose own mask is not a squircle is put into the lit tile
+	TBool ShapeAll() const
+		{
+		if (!iShapeRead)
+			{
+			iShapeRead = ETrue;
+			CRepository* r = NULL;
+			TRAPD(e, r = CRepository::NewL(TUid::Uid(0xE7015A01)));
+			if (e == KErrNone && r)
+				{
+				TInt v = 0;
+				if (r->Get(22, v) == KErrNone)
+					iShapeAll = v != 0;
+				delete r;
+				}
+			RDebug::Printf("PH: [etesianhome] shape all icons as squircles: %d", iShapeAll);
+			}
+		return iShapeAll;
+		}
+	TBool Wrap(const CEtApp& aApp) const { return ShapeAll() && !aApp.iIsSq; }
+	// is the icon's alpha mask a squircle (|x|^n + |y|^n = 1 with n about 2.8 to 5)? The mask is drawn into a grey bitmap, its opaque bounding box is
+	// found, and the four diagonal corners give the exponent: the boundary on the diagonal lies at r = 2^(-1/n) of the half width (a circle 0.707,
+	// n 2.8 = 0.78, n 5 = 0.87, a square 1.0); the covered share of the box must fit too (0.80 .. 0.93)
+	TBool IsSquircleMask(const CFbsBitmap* aMask, TUint32 aUid)
+		{
+		if (!aMask)
+			return EFalse;
+		const TSize sz = aMask->SizeInPixels();
+		if (sz.iWidth < 16 || sz.iHeight < 16 || sz.iWidth > 400 || sz.iHeight > 400)
+			return EFalse;
+		CFbsBitmap* g = new CFbsBitmap;
+		if (!g)
+			return EFalse;
+		TBool result = EFalse;
+		CFbsBitmapDevice* dev = NULL;
+		CFbsBitGc* gc = NULL;
+		TUint8* px = NULL;
+		if (g->Create(sz, EGray256) == KErrNone)
+			{
+			TRAPD(e, dev = CFbsBitmapDevice::NewL(g); User::LeaveIfError(dev->CreateContext(gc)));
+			if (e == KErrNone && gc)
+				{
+				gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+				gc->SetBrushColor(KRgbBlack);
+				gc->Clear();
+				gc->BitBlt(TPoint(0, 0), aMask);
+				const TInt w = sz.iWidth, h = sz.iHeight;
+				px = new TUint8[w * h];
+				if (px)
+					{
+					for (TInt y = 0; y < h; y++)
+						{
+						TPtr8 row(px + y * w, 0, w);
+						g->GetScanLine(row, TPoint(0, y), w, EGray256);
+						}
+					TInt x0 = w, x1 = -1, y0 = h, y1 = -1, cnt = 0;
+					for (TInt y = 0; y < h; y++)
+						for (TInt x = 0; x < w; x++)
+							if (px[y * w + x] >= 128)
+								{
+								cnt++;
+								if (x < x0) x0 = x;
+								if (x > x1) x1 = x;
+								if (y < y0) y0 = y;
+								if (y > y1) y1 = y;
+								}
+					const TInt bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+					if (cnt > 0 && bw >= w / 2 && bh >= h / 2 && bw * 100 / bh > 85 && bw * 100 / bh < 118)
+						{
+						TInt rsum = 0;
+						for (TInt c = 0; c < 4; c++)
+							{
+							const TInt sx = (c & 1) ? -1 : 1, sy = (c & 2) ? -1 : 1;
+							const TInt cxp = (c & 1) ? x1 : x0, cyp = (c & 2) ? y1 : y0;
+							TInt i = 0;
+							while (i < bw / 2 && px[(cyp + sy * i) * w + (cxp + sx * i)] < 128)
+								i++;
+							// r in per mille: the distance of the first opaque pixel's centre from the box centre, over the half width
+							rsum += (bw - 2 * i - 1) * 1000 / bw;
+							}
+						const TInt r = rsum / 4;		// per mille
+						const TInt fill = cnt * 100 / (bw * bh);
+						// r = 2^(-1/n): n 2.7 -> 774, n 5.5 -> 881 (per mille)
+						result = r >= 770 && r <= 890 && fill >= 80 && fill <= 93;
+						RDebug::Printf("PH: [etesianhome] icon 0x%x mask %dx%d box %dx%d diag r %d fill %d -> squircle %d", aUid, w, h, bw, bh, r, fill, result);
+						}
+					else
+						RDebug::Printf("PH: [etesianhome] icon 0x%x mask box %dx%d of %dx%d -> not a squircle", aUid, bw, bh, w, h);
+					delete[] px;
+					}
+				}
+			}
+		delete gc;
+		delete dev;
+		delete g;
+		return result;
 		}
 	void LoadAppsL()
 		{
@@ -692,8 +802,10 @@ public:
 		for (TInt i = 0; i < 4 && i < iApps.Count(); i++)
 			{
 			const TRect c = RowCell(aStrip, i);
-			aGc.BitBltMasked(c.iTl, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
-			DrawIcon(aGc, *iApps[i], c, 62);
+			const TBool wrap = Wrap(*iApps[i]);
+			if (wrap)
+				aGc.BitBltMasked(c.iTl, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
+			DrawIcon(aGc, *iApps[i], c, wrap ? 62 : 100);
 			}
 		}
 	TInt RowHit(const TRect& aStrip, const TPoint& aP) const
@@ -1153,11 +1265,13 @@ public:
 				continue;
 			const TPoint tp(cell.iTl.iX + (iCellW - iTile) / 2, cell.iTl.iY + Sc(4));
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
-			gc.BitBltMasked(tp, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
 			const CEtApp* a = iApps[i];
+			const TBool wrap = Wrap(*a);
+			if (wrap)
+				gc.BitBltMasked(tp, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
 			if (iEditApps && i == iDragApp)
 				continue;		// drawn under the finger below
-			DrawIcon(gc, *a, TRect(tp, TSize(iTile, iTile)), 62);
+			DrawIcon(gc, *a, TRect(tp, TSize(iTile, iTile)), wrap ? 62 : 100);
 			if (iEditApps)
 				DrawSquircleRing(gc, TRect(tp.iX - 2, tp.iY - 2, tp.iX + iTile + 2, tp.iY + iTile + 2));
 			if (i == iSel)
@@ -1175,8 +1289,10 @@ public:
 			{
 			const TRect box(iDragPos.iX - iTile / 2, iDragPos.iY - iTile / 2, iDragPos.iX + iTile / 2, iDragPos.iY + iTile / 2);
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
-			gc.BitBltMasked(box.iTl, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
-			DrawIcon(gc, *iApps[iDragApp], box, 62);
+			const TBool wrap = Wrap(*iApps[iDragApp]);
+			if (wrap)
+				gc.BitBltMasked(box.iTl, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
+			DrawIcon(gc, *iApps[iDragApp], box, wrap ? 62 : 100);
 			DrawSquircleRing(gc, box);
 			}
 		}
@@ -1319,10 +1435,12 @@ public:
 			// rows: a lit 44 dp squircle with the app's icon, title 16 bold, summary 14 regular
 			const TPoint tp(r.iTl.iX, r.iTl.iY + (r.Height() - iEvSize) / 2);
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
-			gc.BitBltMasked(tp, &iEvTile, TRect(TPoint(0, 0), TSize(iEvSize, iEvSize)), &iEvMask, ETrue);
 			const CEtApp* app = FindApp(k == 0 ? KLogsAppUid : KMessagesAppUid);
+			const TBool wrap = !app || Wrap(*app);
+			if (wrap)
+				gc.BitBltMasked(tp, &iEvTile, TRect(TPoint(0, 0), TSize(iEvSize, iEvSize)), &iEvMask, ETrue);
 			if (app)
-				DrawIcon(gc, *app, TRect(tp, TSize(iEvSize, iEvSize)), 62);
+				DrawIcon(gc, *app, TRect(tp, TSize(iEvSize, iEvSize)), wrap ? 62 : 100);
 			TBuf<48> title, sub;
 			if (k == 0)
 				{
@@ -1761,6 +1879,7 @@ private:
 	TInt iCardLevel = 0;		// the Open apps zoom level set by a pinch or the keys 1..4 (0 = the default for the orientation)
 	TInt iBatt = -1, iBars = -1;		// battery level 0..7 (HWRM power state), signal bars (CTelephony); -1 = unknown
 	MEtStatusActions* iStatusAct = NULL;
+	mutable TBool iShapeRead, iShapeAll;
 	TBool iCharging = EFalse, iStatusMenu = EFalse, iEditApps = EFalse;
 	TInt iDragApp = -1;
 	TPoint iDragPos;

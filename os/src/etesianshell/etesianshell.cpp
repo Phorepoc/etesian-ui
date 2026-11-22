@@ -31,8 +31,8 @@ const TUid KDevMenuRepo = { 0xE7015A01 };
 const TUint32 KKeyShellId = 10, KKeyShellTries = 11, KKeyShellNote = 12, KKeyOrientation = 13;
 // the additions (guide 01-principles 11): edge gestures are the N9's own, on by default (key 20: absent or 1 = on, 0 = off); "Back by swiping in" is
 // Disabled by default (key 21: 0 off, 1 left, 2 right). pheshellsel does not read them: Etesian Home does, whenever it goes to the background.
-const TUint32 KKeyEdgeGestures = 20, KKeyBackSwipe = 21;
-enum { ERowEtesian = 0, ERowS3, ERowEdge, ERowBack, ERowScreen, ERowRestart, ERowCount };
+const TUint32 KKeyEdgeGestures = 20, KKeyBackSwipe = 21, KKeySquircles = 22;
+enum { ERowEtesian = 0, ERowS3, ERowEdge, ERowBack, ERowSquircle, ERowScreen, ERowRestart, ERowCount };
 // the theme hook (core's pheshelltheme.h, the same code pheshellsel's guard uses): Etesian's own theme is active while the Etesian shell is chosen;
 // the theme that was active before is kept (developer-menu repository keys 15 / 16) and put back when S^3 is chosen again or the guard falls back
 _LIT(KEtesianThemeName, "Etesian");
@@ -259,6 +259,7 @@ public:
 			case ERowS3: Choose(aRow); break;
 			case ERowEdge: SetKey(KKeyEdgeGestures, EdgeGestures() ? 0 : 1); break;
 			case ERowBack: SetKey(KKeyBackSwipe, (BackSwipe() + 1) % 3); break;
+			case ERowSquircle: SetKey(KKeySquircles, Squircles() ? 0 : 1); break;
 			case ERowScreen: CycleOrientation(); break;
 			default: Restart(); break;
 			}
@@ -291,6 +292,7 @@ public:
 			}
 		RDebug::Printf("PH: [etesianshell] setting %d = %d: %d", (TInt)aKey, aValue, r);
 		}
+	TBool Squircles() const { return GetKey(KKeySquircles, 0) != 0; }
 	TBool EdgeGestures() const { return GetKey(KKeyEdgeGestures, 1) != 0; }
 	TInt BackSwipe() const { const TInt v = GetKey(KKeyBackSwipe, 0); return v < 0 || v > 2 ? 0 : v; }
 	// the screen orientation the next start applies (core's pheshellsel): CenRep E7015A01 key 13, 0 Automatic | 1 Portrait | 2 Landscape
@@ -343,7 +345,7 @@ public:
 	TInt Sc(TInt aDp) const { const TInt u = Rect().Width() < Rect().Height() ? Rect().Width() : Rect().Height(); return (aDp * u + 160) / 320; }
 	TRect RowRect(TInt aRow) const
 		{
-		const TInt top = Sc(56), rh = Rect().Width() > Rect().Height() ? Sc(32) : Sc(44), gap = Sc(4);
+		const TInt top = Sc(56), rh = Rect().Width() > Rect().Height() ? Sc(27) : Sc(44), gap = Sc(3);
 		return TRect(Sc(11), top + aRow * (rh + gap), Rect().Width() - Sc(11), top + aRow * (rh + gap) + rh);
 		}
 	TInt RowAt(const TPoint& aP) const
@@ -423,6 +425,8 @@ public:
 				}
 			else if (i == ERowEdge)
 				orient.Format(_L("Edge gestures: %S"), EdgeGestures() ? &KOn : &KOff);
+			else if (i == ERowSquircle)
+				orient.Format(_L("Shape all icons as squircles: %S"), Squircles() ? &KOn : &KOff);
 			else if (i == ERowBack)
 				{
 				const TInt b = BackSwipe();
