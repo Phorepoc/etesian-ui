@@ -332,6 +332,17 @@ public:
 		iPrevW = iCardW - Sc(12);
 		iPrevH = iPrevW * iH / iW;
 		iCardH = Sc(6) + iPrevH + Sc(6) + iLabelH + Sc(8);
+		iCardLeft = iGap;
+		if (iCardCols == 1)
+			{
+			// the carousel: one card that fits the screen's height, centred
+			const TInt availH = iH - iStatusH - iBottomH - Sc(16);
+			iPrevH = availH - Sc(6) - Sc(6) - iLabelH - Sc(8);
+			iPrevW = iPrevH * iW / iH;
+			iCardW = iPrevW + Sc(12);
+			iCardLeft = (iW - iCardW) / 2;
+			iCardH = Sc(6) + iPrevH + Sc(6) + iLabelH + Sc(8);
+			}
 		iScroll = 0;
 		// the lit Done / Close all buttons and the red close squircle
 		iBtnW = Sc(120);
@@ -490,7 +501,7 @@ public:
 		{
 		const TInt c = aIndex % Cols(), r = aIndex / Cols();
 		if (iPage == EPageOpen)
-			return TRect(TPoint(iGap + c * (iCardW + iGap), GridTop() + r * RowH() - iScroll), TSize(iCardW, iCardH));
+			return TRect(TPoint(iCardLeft + c * (iCardW + iGap), GridTop() + r * RowH() - iScroll), TSize(iCardW, iCardH));
 		return TRect(TPoint(c * iCellW, GridTop() + r * iCellH - iScroll), TSize(iCellW, iCellH));
 		}
 	// the red close squircle: at the card's top-right, slightly outside its corner (guide 20, Open apps edit mode)
@@ -1226,7 +1237,7 @@ public:
 			const TRect pv(TPoint(c.iTl.iX + Sc(6), c.iTl.iY + Sc(6)), TSize(iPrevW, iPrevH));
 			const CEtThumb* th = ThumbFor(card->iWgId);
 			if (th)
-				gc.BitBlt(pv.iTl, iEdit ? th->iDim : th->iBmp);
+				gc.DrawBitmap(pv, iEdit ? th->iDim : th->iBmp);		// scaled: the zoom level can change after the preview was taken
 			else if (card->iApp)
 				DrawIcon(gc, *card->iApp, pv, 45);
 			if (i == iSel)
@@ -1746,6 +1757,7 @@ private:
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
 	TPoint iDownPos;
 	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse, iEdit = EFalse, iHeld = EFalse;
+	TInt iCardLeft = 0;
 	TInt iCardLevel = 0;		// the Open apps zoom level set by a pinch or the keys 1..4 (0 = the default for the orientation)
 	TInt iBatt = -1, iBars = -1;		// battery level 0..7 (HWRM power state), signal bars (CTelephony); -1 = unknown
 	MEtStatusActions* iStatusAct = NULL;
