@@ -2907,6 +2907,7 @@ private:
 		gc->Deactivate();
 		delete gc;
 		iWs.Flush();
+		RDebug::Printf("PH: [etesianlock] drawn %dx%d", w, h);
 		}
 	void RunL()
 		{
