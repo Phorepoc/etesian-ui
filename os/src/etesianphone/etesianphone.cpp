@@ -37,10 +37,23 @@ _LIT(KFiraLight, "Fira Sans Light");
 static TInt Chan(TUint32 aRgb, TInt aShift) { return (aRgb >> aShift) & 0xFF; }
 
 // is (x, y) inside a w x h shape inset by aInset px: n = 2.8 superellipse (aSquircle) or a rounded rectangle of radius aRadius
-static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TBool aSquircle, TReal aInset)
+static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TInt aSquircle, TReal aInset)
 	{
 	const TReal cx = aX - aW / 2, cy = aY - aH / 2;
 	const TReal ax = cx < 0 ? -cx : cx, ay = cy < 0 ? -cy : cy;
+	if (aSquircle == 2)
+		{
+		// squircle-half ends (guide 05-shape): a squircle as tall as the shape cut in two and pulled apart, joined by straight lines
+		const TReal hw = aW / 2 - aInset, hh = aH / 2 - aInset;
+		if (hw <= 0 || hh <= 0)
+			return EFalse;
+		const TReal flat = hw > hh ? hw - hh : 0;
+		const TReal dx = ax > flat ? ax - flat : 0;
+		TReal px = 0, py = 0;
+		Math::Pow(px, dx / (hw > hh ? hh : hw), 2.8);
+		Math::Pow(py, ay / hh, 2.8);
+		return px + py <= 1.0;
+		}
 	if (aSquircle)
 		{
 		const TReal hw = aW / 2 - aInset, hh = aH / 2 - aInset;
@@ -62,7 +75,7 @@ static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TBool
 // a top-lit shape (guide 06b / 20 section 6): a vertical gradient aTop -> aBottom (and aMid in the middle when it is not KNoMid) with a
 // 1.4 px rim (aRimTop on the top third, aRimBottom below) and its antialiased alpha mask (EGray256, drawn with BitBltMasked ... ETrue)
 const TUint32 KNoMid = 0xFF000000;
-static void MakeLitL(CFbsBitmap& aBmp, CFbsBitmap& aMask, TInt aW, TInt aH, TInt aRadius, TBool aSquircle,
+static void MakeLitL(CFbsBitmap& aBmp, CFbsBitmap& aMask, TInt aW, TInt aH, TInt aRadius, TInt aSquircle,
 					 TUint32 aTop, TUint32 aMid, TUint32 aBottom, TUint32 aRimTop, TUint32 aRimBottom)
 	{
 	aBmp.Reset();
@@ -236,7 +249,7 @@ public:
 		const TInt tb = iToolH - Sc(8);
 		iTbSize = tb;
 		TRAP_IGNORE(MakeLitL(iBackBmp, iBackMask, tb, tb, 0, ETrue, 0x2A2A2A, KNoMid, 0x080808, 0x505050, 0x393839));
-		TRAP_IGNORE(MakeLitL(iCallBmp, iCallMask, tb * 3 / 2, tb, 0, ETrue, 0x84C638, KNoMid, 0x509600, 0xB8E57A, 0x3E7400));
+		TRAP_IGNORE(MakeLitL(iCallBmp, iCallMask, tb * 3 / 2, tb, 0, 2, 0x84C638, KNoMid, 0x509600, 0xB8E57A, 0x3E7400));
 		}
 	TRect KeyRect(TInt aIdx) const		// 0..11: 1 2 3 4 5 6 7 8 9 * 0 #
 		{

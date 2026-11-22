@@ -79,10 +79,23 @@ static TRgb Rgb(TUint32 aRgb) { return TRgb((aRgb >> 16) & 0xFF, (aRgb >> 8) & 0
 static TInt Chan(TUint32 aRgb, TInt aShift) { return (aRgb >> aShift) & 0xFF; }
 
 // is (x, y) inside a w x h shape inset by aInset px: n = 2.8 superellipse (aSquircle) or a rounded rectangle of radius aRadius
-static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TBool aSquircle, TReal aInset)
+static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TInt aSquircle, TReal aInset)
 	{
 	const TReal cx = aX - aW / 2, cy = aY - aH / 2;
 	const TReal ax = cx < 0 ? -cx : cx, ay = cy < 0 ? -cy : cy;
+	if (aSquircle == 2)
+		{
+		// squircle-half ends (guide 05-shape): a squircle as tall as the shape cut in two and pulled apart, joined by straight lines
+		const TReal hw = aW / 2 - aInset, hh = aH / 2 - aInset;
+		if (hw <= 0 || hh <= 0)
+			return EFalse;
+		const TReal flat = hw > hh ? hw - hh : 0;
+		const TReal dx = ax > flat ? ax - flat : 0;
+		TReal px = 0, py = 0;
+		Math::Pow(px, dx / (hw > hh ? hh : hw), 2.8);
+		Math::Pow(py, ay / hh, 2.8);
+		return px + py <= 1.0;
+		}
 	if (aSquircle)
 		{
 		const TReal hw = aW / 2 - aInset, hh = aH / 2 - aInset;
@@ -104,7 +117,7 @@ static TBool Inside(TReal aX, TReal aY, TReal aW, TReal aH, TReal aRadius, TBool
 // a top-lit shape (guide 06b / 20 section 6): a vertical gradient aTop -> aBottom (and aMid in the middle when it is not KNoMid) with a
 // 1.4 px rim (aRimTop on the top third, aRimBottom below) and its antialiased alpha mask (EGray256, drawn with BitBltMasked ... ETrue)
 const TUint32 KNoMid = 0xFF000000;
-static void MakeLitL(CFbsBitmap& aBmp, CFbsBitmap& aMask, TInt aW, TInt aH, TInt aRadius, TBool aSquircle,
+static void MakeLitL(CFbsBitmap& aBmp, CFbsBitmap& aMask, TInt aW, TInt aH, TInt aRadius, TInt aSquircle,
 					 TUint32 aTop, TUint32 aMid, TUint32 aBottom, TUint32 aRimTop, TUint32 aRimBottom)
 	{
 	aBmp.Reset();
@@ -159,6 +172,7 @@ public:
 	CFbsBitmap* iBmp = NULL;		// the skin-aware (MIF / SVG) app icon and its mask, sized for the tile
 	CFbsBitmap* iMask = NULL;
 	TBool iIsSq = EFalse;		// the icon's own mask is already a squircle (see IsSquircleMask)
+	TInt iScalePct = 100;		// the icon is drawn this much larger so that the opaque box of its mask fills the tile (the pictures carry a transparent inset)
 	};
 
 // the last frame of an application, copied from the screen when the Menu key went down while it was in front
@@ -354,7 +368,7 @@ public:
 		// the lit Done / Close all buttons and the red close squircle
 		iBtnW = Sc(120);
 		iBtnH = Sc(32);
-		TRAP_IGNORE(MakeLitL(iBtnBmp, iBtnMask, iBtnW, iBtnH, iBtnH * 21 / 100, EFalse, 0x1C1C1C, 0x101010, 0x080808, 0x393839, 0x393839));
+		TRAP_IGNORE(MakeLitL(iBtnBmp, iBtnMask, iBtnW, iBtnH, iBtnH * 21 / 100, 2, 0x1C1C1C, 0x101010, 0x080808, 0x393839, 0x393839));
 		iXSize = iCardW * 28 / 100;
 		TRAP_IGNORE(MakeLitL(iXBmp, iXMask, iXSize, iXSize, 0, ETrue, 0xF78673, KNoMid, 0xEF2C10, 0xFFB5A8, 0xB01E0C));
 		}
@@ -421,6 +435,7 @@ public:
 			if (mask)
 				AknIconUtils::SetSize(mask, full, EAspectRatioPreserved);
 			aApp.iIsSq = IsSquircleMask(mask, aApp.iUid.iUid);
+			aApp.iScalePct = iLastBoxPct > 80 && iLastBoxPct < 100 ? 10000 / iLastBoxPct : 100;
 			if (ShapeAll() && !aApp.iIsSq)
 				{
 				const TSize g(iTile * 62 / 100, iTile * 62 / 100);
@@ -441,7 +456,10 @@ public:
 				aApp.iIcon = NULL;
 				}
 			else
+				{
 				aApp.iIsSq = IsSquircleMask(aApp.iIcon->Mask(), aApp.iUid.iUid);
+				aApp.iScalePct = iLastBoxPct > 80 && iLastBoxPct < 100 ? 10000 / iLastBoxPct : 100;
+				}
 			}
 		}
 	// the setting "Shape all icons as squircles" of the Etesian shell app (CenRep E7015A01 key 22; off by default): off = every icon is drawn as
@@ -470,6 +488,7 @@ public:
 	// n 2.8 = 0.78, n 5 = 0.87, a square 1.0); the covered share of the box must fit too (0.80 .. 0.93)
 	TBool IsSquircleMask(const CFbsBitmap* aMask, TUint32 aUid)
 		{
+		iLastBoxPct = 100;
 		if (!aMask)
 			return EFalse;
 		const TSize sz = aMask->SizeInPixels();
@@ -512,6 +531,7 @@ public:
 								if (y > y1) y1 = y;
 								}
 					const TInt bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+					iLastBoxPct = bw * 100 / w;		// how much of the picture the opaque box fills
 					if (cnt > 0 && bw >= w / 2 && bh >= h / 2 && bw * 100 / bh > 85 && bw * 100 / bh < 118)
 						{
 						TInt rsum = 0;
@@ -1549,7 +1569,7 @@ public:
 	// the app's icon centred in aBox, taking aPercent of its width
 	void DrawIcon(CBitmapContext& gc, const CEtApp& aApp, const TRect& aBox, TInt aPercent) const
 		{
-		const TInt g = aBox.Width() * aPercent / 100;
+		const TInt g = aBox.Width() * aPercent / 100 * aApp.iScalePct / 100;
 		const TRect dst(TPoint(aBox.iTl.iX + (aBox.Width() - g) / 2, aBox.iTl.iY + (aBox.Height() - g) / 2), TSize(g, g));
 		if (aApp.iBmp)
 			{
@@ -1596,7 +1616,7 @@ public:
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(KColRim));
 			gc.SetPenSize(TSize(1, 1));
-			gc.DrawRoundRect(c, TSize(8, 8));		// cards: radius 8 (chapter 05)
+			gc.DrawRoundRect(c, TSize(Sc(2), Sc(2)));		// cards: radius 8 (chapter 05)
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
 			gc.SetPenStyle(CGraphicsContext::ENullPen);
 			// the preview: the app's last frame (dimmed to 50 % in edit mode), else its icon
@@ -1612,7 +1632,7 @@ public:
 				gc.SetPenColor(Rgb(KColAccent));
 				gc.SetPenSize(TSize(2, 2));
 				gc.SetBrushStyle(CGraphicsContext::ENullBrush);
-				gc.DrawRoundRect(c, TSize(8, 8));
+				gc.DrawRoundRect(c, TSize(Sc(2), Sc(2)));
 				gc.SetPenStyle(CGraphicsContext::ENullPen);
 				}
 			// the label: regular, white (guide 20)
@@ -2156,6 +2176,7 @@ private:
 	TInt iBatt = -1, iBars = -1;		// battery level 0..7 (HWRM power state), signal bars (CTelephony); -1 = unknown
 	MEtStatusActions* iStatusAct = NULL;
 	mutable TBool iShapeRead, iShapeAll;
+	TInt iLastBoxPct = 100;
 	TBool iCharging = EFalse, iStatusMenu = EFalse, iEditApps = EFalse;
 	TInt iDragApp = -1;
 	TPoint iDragPos;
@@ -2779,8 +2800,8 @@ private:
 				iDev->ReleaseFont(iF[i]);
 			iF[i] = NULL;
 			}
-		// Fira Sans (the image's typeface): the clock 64 dp light, the date 21 light, the card title 16 regular, the card text and the hint 14 regular
-		static const TInt px[4] = { 64, 21, 16, 14 };
+		// Fira Sans (the image's typeface): the clock 48 dp light (guide: display 48), the date 21 light, the card title 16 regular, the card text and the hint 14 regular
+		static const TInt px[4] = { 48, 21, 16, 14 };
 		for (TInt i = 0; i < 4; i++)
 			{
 			TFontSpec spec(i < 2 ? _L("Fira Sans Light") : _L("Fira Sans"), Sc(px[i]));
