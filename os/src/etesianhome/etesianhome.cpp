@@ -2757,8 +2757,8 @@ private:
 			self->Show();
 		else if (!locked && self->iShown)
 			{
-			// the system lifted the lock (the power key wakes it): the swipe is the only way out while the layer is up
-			self->iKl.EnableKeyLock();
+			// the system lifted the lock (the power key wakes the phone and lifts it): the layer stays up until the swipe. Locking again here would
+			// blank the display again, so the layer keeps its own state
 			self->Redraw();
 			}
 		else if (locked)
