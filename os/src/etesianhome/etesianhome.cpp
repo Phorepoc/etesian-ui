@@ -2254,7 +2254,7 @@ private:
 			{
 			iMode = mode;
 			iDev->SetAppScreenMode(mode);
-			iDev->SetScreenModeEnforcement(CWsScreenDevice::ESizeEnforcementNone);
+			iDev->SetScreenModeEnforcement(ESizeEnforcementNone);
 			RDebug::Printf("PH: [etesianedges] screen mode %d", mode);
 			}
 		}
