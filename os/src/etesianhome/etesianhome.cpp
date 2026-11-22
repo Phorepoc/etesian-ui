@@ -48,6 +48,7 @@
 #include <gdi.h>
 #include <w32std.h>
 #include <etel3rdparty.h>
+#include <aknsoftnotifier.h>
 #include "../phedevmenu/pheshellapps.h"
 #include "etesianhome.hrh"
 
@@ -262,6 +263,7 @@ public:
 		{
 		delete iSignal;
 		delete iClock;
+		delete iWatch;
 		delete iMenuTimer;
 		delete iCloseTimer;
 		delete iHoldTimer;
@@ -280,6 +282,7 @@ public:
 		Layout(aRect);
 		User::LeaveIfError(iLs.Connect());
 		LoadAppsL();
+		iWatch = CPeriodic::NewL(CActive::EPriorityLow);
 		iClock = CPeriodic::NewL(CActive::EPriorityLow);
 		iClock->Start(15000000, 15000000, TCallBack(ClockTick, this));
 		TRAP_IGNORE(iSignal = CEtSignal::NewL(*this));
@@ -811,6 +814,25 @@ public:
 			}
 		CleanupStack::PopAndDestroy(tl);
 		RDebug::Printf("PH: [etesianhome] open apps: %d (%d skipped by the stock rules)", iCards.Count(), skipped);
+		}
+	// after a swipe closed the front application: its window group goes a moment later, so the Open apps list is read again until it has
+	void WatchOpenApps()
+		{
+		iWatchLeft = 12;
+		iWatch->Cancel();
+		iWatch->Start(250000, 250000, TCallBack(WatchTick, this));
+		}
+	static TInt WatchTick(TAny* aThis)
+		{
+		CEtHomeContainer* self = static_cast<CEtHomeContainer*>(aThis);
+		if (self->iPage == EPageOpen && !self->iDragging && !self->iEdit)
+			{
+			self->RefreshOpen();
+			self->DrawNow();
+			}
+		if (--self->iWatchLeft <= 0)
+			self->iWatch->Cancel();
+		return 0;
 		}
 	void CloseCard(TInt aIndex)
 		{
@@ -1606,6 +1628,8 @@ private:
 	CFbsBitmap iBtnBmp, iBtnMask;		// the lit Done / Close all button
 	CFbsBitmap iXBmp, iXMask;			// the red close squircle
 	CPeriodic* iClock = NULL;
+	CPeriodic* iWatch = NULL;
+	TInt iWatchLeft = 0;
 	CPeriodic* iMenuTimer = NULL;
 	CPeriodic* iCloseTimer = NULL;
 	CPeriodic* iHoldTimer = NULL;
@@ -2188,12 +2212,27 @@ public:
 		{
 		RDebug::Printf("PH: [etesianhome] edge swipe: closed, Open apps");
 		if (iView)
+			{
 			iView->ShowOpenApps();
+			iView->WatchOpenApps();
+			}
 		ToHome(EFalse);
+		}
+	void NoSoftNotes()
+		{
+		CAknSoftNotifier* sn = NULL;
+		TRAPD(e, sn = CAknSoftNotifier::NewL());
+		if (e == KErrNone && sn)
+			{
+			TRAP_IGNORE(sn->SetIdleStateL(EFalse));		// the soft notes ("2 new messages") are shown by the idle application's state; Etesian shows notifications on its Events page
+			delete sn;
+			}
 		}
 	void HandleForegroundEventL(TBool aForeground)
 		{
 		CAknAppUi::HandleForegroundEventL(aForeground);
+		if (aForeground)
+			NoSoftNotes();
 		if (iEdges)
 			iEdges->SetEnabled(!aForeground);		// strips in front of the applications only while Home is behind them
 		}

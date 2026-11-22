@@ -15,6 +15,10 @@ case "$ARCH" in arm) AFL=--arm;; x32) AFL=;; *) echo "ARCH must be arm or x32 (g
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 FILES=()
 FILES+=(--file "$REPO/shell/etesian.txt=!:/resource/phe/shells/etesian.txt")
+# the shell app icon: a vector .mif from its SVG-Tiny source (the pdk tool: the launcher renders it sharp at any grid size)
+mkdir -p "$PHOREPOC_BUILD/appicons"
+python3 "$PHOREPOC_PDK/tools/app_icon_mif.py" "$REPO/os/src/etesianshell/data/etesianshell_icon_tiny.svg" "$PHOREPOC_BUILD/appicons/etesianshell_icon.mif"
+FILES+=(--file "$PHOREPOC_BUILD/appicons/etesianshell_icon.mif=!:/resource/apps/etesianshell_icon.mif")
 for t in apps hides assoc; do
   FILES+=(--file "$REPO/shell/etesian.$t=!:/resource/phe/shells/etesian.$t")
 done
