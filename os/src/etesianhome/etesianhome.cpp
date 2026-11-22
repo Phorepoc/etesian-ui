@@ -21,6 +21,7 @@
 // like the stock idle, publishes KPSIdlePhase1Ok when it is up. Sizes are in dp of a 320 dp wide reference (the shorter screen side).
 #include <e32debug.h>
 #include <e32math.h>
+#include <hal.h>
 #include <e32property.h>
 #include <eikstart.h>
 #include <aknapp.h>
@@ -273,6 +274,8 @@ public:
 		delete iClock;
 		delete iWatch;
 		delete iPreviewTimer;
+		delete iAnimTimer;
+		FreeStrip();
 		delete iMenuTimer;
 		delete iCloseTimer;
 		delete iHoldTimer;
@@ -293,6 +296,7 @@ public:
 		LoadAppsL();
 		iWatch = CPeriodic::NewL(CActive::EPriorityLow);
 		iPreviewTimer = CPeriodic::NewL(CActive::EPriorityLow);
+		iAnimTimer = CPeriodic::NewL(CActive::EPriorityHigh);
 		TRAP_IGNORE(Window().EnableAdvancedPointers());
 		iClock = CPeriodic::NewL(CActive::EPriorityLow);
 		iClock->Start(15000000, 15000000, TCallBack(ClockTick, this));
@@ -721,6 +725,214 @@ public:
 		else if (iPage == EPageEvents)
 			RefreshEvents();
 		DrawNow();
+		}
+	// ---- the strip
+	void FreeStrip()
+		{
+		for (TInt i = 0; i < 3; i++)
+			{
+			delete iPg[i];
+			iPg[i] = NULL;
+			}
+		iStripOn = EFalse;
+		iStripX = 0;
+		}
+	// one page as a picture of the whole window: the background, then the page as Draw() would draw it (the status bar and the bottom band are
+	// drawn over the strip by Draw(), they do not move)
+	void BuildPage(TInt aPage)
+		{
+		CFbsBitmap* bm = new CFbsBitmap;
+		if (!bm)
+			return;
+		CFbsBitmapDevice* dev = NULL;
+		CFbsBitGc* gc = NULL;
+		if (bm->Create(TSize(iW, iH), EColor16MU) == KErrNone)
+			{
+			TRAPD(e, dev = CFbsBitmapDevice::NewL(bm); User::LeaveIfError(dev->CreateContext(gc)));
+			if (e == KErrNone && gc)
+				{
+				gc->SetPenStyle(CGraphicsContext::ENullPen);
+				gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+				gc->SetBrushColor(Rgb(KColBg));
+				gc->DrawRect(TRect(0, 0, iW, iH));
+				gc->SetClippingRect(TRect(0, iStatusH, iW, iH - iBottomH));
+				const TInt keepPage = iPage, keepScroll = iScroll, keepSel = iSel;
+				if (aPage != keepPage)
+					{
+					iPage = aPage;
+					iScroll = 0;
+					iSel = -1;
+					if (aPage == EPageOpen)
+						RefreshOpen();
+					else if (aPage == EPageEvents)
+						RefreshEvents();
+					}
+				if (aPage == EPageApps)
+					DrawApps(*gc);
+				else if (aPage == EPageOpen)
+					DrawOpen(*gc);
+				else
+					DrawEvents(*gc);
+				iPage = keepPage;
+				iScroll = keepScroll;
+				iSel = keepSel;
+				}
+			}
+		delete gc;
+		delete dev;
+		iPg[aPage] = bm;
+		}
+	void BeginStrip()
+		{
+		if (iStripOn)
+			return;
+		FreeStrip();
+		const TInt t0 = User::NTickCount();
+		for (TInt i = 0; i < 3; i++)
+			BuildPage(i);
+		iStripOn = ETrue;
+		iStripX = 0;
+		iFrames = 0;
+		iFrameTicks = 0;
+		RDebug::Printf("PH: [etesianhome] strip: three pages drawn in %d ms", (TInt)(User::NTickCount() - t0));
+		}
+	void DrawStripPages(CWindowGc& gc) const
+		{
+		const TRect band(0, iStatusH, iW, iH - iBottomH);
+		gc.SetClippingRect(band);
+		gc.SetPenStyle(CGraphicsContext::ENullPen);
+		gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+		gc.SetBrushColor(Rgb(KColBg));
+		gc.DrawRect(band);
+		const TInt pages[3] = { (iPage + 2) % 3, iPage, (iPage + 1) % 3 };		// the left neighbour, this page, the right neighbour (wrapping)
+		for (TInt k = 0; k < 3; k++)
+			{
+			const TInt x = iStripX + (k - 1) * iW;
+			const TInt d0 = x > 0 ? x : 0, d1 = x + iW < iW ? x + iW : iW;
+			if (d1 <= d0 || !iPg[pages[k]])
+				continue;
+			gc.BitBlt(TPoint(d0, iStatusH), iPg[pages[k]], TRect(d0 - x, iStatusH, d1 - x, iH - iBottomH));
+			}
+		gc.CancelClippingRect();
+		}
+	void DrawFrame()
+		{
+		const TUint c0 = User::FastCounter();
+		ActivateGc();
+		Draw(Rect());
+		DeactivateGc();
+		iEikonEnv->WsSession().Flush();
+		iFrameTicks += (TInt)(User::FastCounter() - c0);
+		iFrames++;
+		}
+	void LogFrames(const char* aWhat)
+		{
+		TInt hz = 1000000;
+		HAL::Get(HAL::EFastCounterFrequency, hz);
+		if (iFrames > 0 && hz > 0)
+			{
+			const TInt usPerFrame = (TInt)((TInt64)iFrameTicks * 1000000 / hz / iFrames);
+			RDebug::Printf("PH: [etesianhome] strip %s: %d frames, %d us per frame drawn (%d fps possible) at %dx%d", aWhat, iFrames, usPerFrame, usPerFrame > 0 ? 1000000 / usPerFrame : 0, iW, iH);
+			}
+		}
+	// the finger drags the whole strip 1:1
+	void StripDrag(TInt aDx)
+		{
+		BeginStrip();
+		iStripX = aDx > iW ? iW : (aDx < -iW ? -iW : aDx);
+		const TInt now = User::NTickCount();
+		iVelX[0] = iVelX[1];
+		iVelT[0] = iVelT[1];
+		iVelX[1] = iStripX;
+		iVelT[1] = now;
+		DrawFrame();
+		}
+	// the finger lifts: past half the width, or a quick flick past 8 %, goes on to the next page; else it springs back. 220 + 180 x (distance left)
+	// ms, Decelerate(1.6) (guide 23-phone-behaviour: commit and spring back)
+	void StripRelease()
+		{
+		if (!iStripOn)
+			return;
+		LogFrames("drag");
+		const TInt dt = iVelT[1] - iVelT[0];
+		const TInt v = dt > 0 ? (iVelX[1] - iVelX[0]) * 1000 / dt : 0;		// px/s
+		const TInt dx = iStripX, ad = dx < 0 ? -dx : dx;
+		const TBool fast = (v > Sc(900) || v < -Sc(900)) && ad * 100 > iW * 8 && ((v < 0) == (dx < 0));
+		const TBool commit = ad * 2 > iW || fast;
+		if (commit)
+			StartSettle(dx < 0 ? -iW : iW, dx < 0 ? iPage + 1 : iPage - 1);
+		else
+			StartSettle(0, -1);
+		}
+	void StartSettle(TInt aTo, TInt aPage)
+		{
+		iAnimFrom = iStripX;
+		iAnimTo = aTo;
+		iAnimPage = aPage;
+		const TInt left = (aTo > iStripX ? aTo - iStripX : iStripX - aTo) * 1000 / iW;		// per mille of the width still to go
+		iAnimDur = 220 + 180 * left / 1000;
+		iAnimStart = 0;
+		TTime t;
+		t.UniversalTime();
+		iAnimStart = t.Int64();
+		iFrames = 0;
+		iFrameTicks = 0;
+		iAnimTimer->Cancel();
+		iAnimTimer->Start(0, 16000, TCallBack(AnimTick, this));
+		}
+	static TInt AnimTick(TAny* aThis)
+		{
+		static_cast<CEtHomeContainer*>(aThis)->Step();
+		return 0;
+		}
+	void Step()
+		{
+		TTime t;
+		t.UniversalTime();
+		const TInt ms = (TInt)((t.Int64() - iAnimStart) / 1000);
+		TReal f = (TReal)ms / (TReal)iAnimDur;
+		if (f >= 1.0)
+			{
+			EndSettle();
+			return;
+			}
+		TReal q = 1.0, e = 3.2;		// Decelerate(1.6): 1 - (1 - t)^(2 x 1.6)
+		Math::Pow(q, 1.0 - f, e);
+		const TReal prog = 1.0 - q;
+		iStripX = iAnimFrom + (TInt)((iAnimTo - iAnimFrom) * prog);
+		DrawFrame();
+		}
+	void EndSettle()
+		{
+		iAnimTimer->Cancel();
+		LogFrames("settle");
+		const TInt page = iAnimPage;
+		iAnimPage = -1;
+		FreeStrip();
+		if (page >= 0)
+			SetPage(page);			// wraps; draws the page for real
+		else
+			DrawNow();
+		}
+	void FinishAnimNow()
+		{
+		if (iAnimTimer && iAnimTimer->IsActive())
+			{
+			iAnimTimer->Cancel();
+			const TInt page = iAnimPage;
+			iAnimPage = -1;
+			FreeStrip();
+			if (page >= 0)
+				SetPage(page);
+			}
+		}
+	// the Left and Right keys move the strip the same way: one whole page, a full slide
+	void AnimatePage(TInt aDir)
+		{
+		FinishAnimNow();
+		BeginStrip();
+		iStripX = 0;
+		StartSettle(aDir > 0 ? -iW : iW, iPage + aDir);
 		}
 	// the Menu key: back to the first page of the grid (short press) or to Open apps (long press)
 	void ShowApplications() { SetPage(EPageApps); }
@@ -1163,7 +1375,7 @@ public:
 			}
 		}
 	// a squircle outline (n = 2.8): the selection highlight; guide 20: never a rounded rectangle for these
-	void DrawSquircleRing(CWindowGc& gc, const TRect& aR) const
+	void DrawSquircleRing(CBitmapContext& gc, const TRect& aR) const
 		{
 		const TInt N = 48;
 		TPoint pts[N + 1];
@@ -1255,7 +1467,7 @@ public:
 				return;
 				}
 		}
-	void DrawApps(CWindowGc& gc) const
+	void DrawApps(CBitmapContext& gc) const
 		{
 		gc.UseFont(iF[EFLabel]);
 		for (TInt i = 0; i < iApps.Count(); i++)
@@ -1297,7 +1509,7 @@ public:
 			}
 		}
 	// the app's icon centred in aBox, taking aPercent of its width
-	void DrawIcon(CWindowGc& gc, const CEtApp& aApp, const TRect& aBox, TInt aPercent) const
+	void DrawIcon(CBitmapContext& gc, const CEtApp& aApp, const TRect& aBox, TInt aPercent) const
 		{
 		const TInt g = aBox.Width() * aPercent / 100;
 		const TRect dst(TPoint(aBox.iTl.iX + (aBox.Width() - g) / 2, aBox.iTl.iY + (aBox.Height() - g) / 2), TSize(g, g));
@@ -1312,7 +1524,7 @@ public:
 		else if (aApp.iIcon && aApp.iIcon->Mask())
 			gc.DrawBitmapMasked(dst, aApp.iIcon, TRect(TPoint(0, 0), aApp.iIcon->SizeInPixels()), aApp.iIcon->Mask(), ETrue);
 		}
-	void DrawLitButton(CWindowGc& gc, const TRect& aR, const TDesC& aText) const
+	void DrawLitButton(CBitmapContext& gc, const TRect& aR, const TDesC& aText) const
 		{
 		gc.SetBrushStyle(CGraphicsContext::ENullBrush);
 		gc.BitBltMasked(aR.iTl, &iBtnBmp, TRect(TPoint(0, 0), aR.Size()), &iBtnMask, ETrue);
@@ -1323,7 +1535,7 @@ public:
 		gc.DiscardFont();
 		gc.SetPenStyle(CGraphicsContext::ENullPen);
 		}
-	void DrawOpen(CWindowGc& gc) const
+	void DrawOpen(CBitmapContext& gc) const
 		{
 		if (iCards.Count() == 0)
 			{
@@ -1395,7 +1607,7 @@ public:
 				}
 		}
 	// Events: header = the day (large, light) and the date (light, about 0.85 x), then a section header and the rows
-	void DrawEvents(CWindowGc& gc) const
+	void DrawEvents(CBitmapContext& gc) const
 		{
 		TTime now;
 		now.HomeTime();
@@ -1472,14 +1684,19 @@ public:
 		gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
 		gc.SetBrushColor(Rgb(KColBg));
 		gc.DrawRect(Rect());
-		gc.SetClippingRect(TRect(0, iStatusH, iW, iH - iBottomH));
-		if (iPage == EPageApps)
-			DrawApps(gc);
-		else if (iPage == EPageOpen)
-			DrawOpen(gc);
+		if (iStripOn)
+			DrawStripPages(gc);
 		else
-			DrawEvents(gc);
-		gc.CancelClippingRect();
+			{
+			gc.SetClippingRect(TRect(0, iStatusH, iW, iH - iBottomH));
+			if (iPage == EPageApps)
+				DrawApps(gc);
+			else if (iPage == EPageOpen)
+				DrawOpen(gc);
+			else
+				DrawEvents(gc);
+			gc.CancelClippingRect();
+			}
 		// status bar (always black, always visible)
 		gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
 		gc.SetBrushColor(Rgb(KColBg));
@@ -1533,6 +1750,8 @@ public:
 	// ---- input
 	TKeyResponse OfferKeyEventL(const TKeyEvent& aKey, TEventCode aType)
 		{
+		if (aType == EEventKey && iStripOn && iAnimTimer->IsActive())
+			return EKeyWasConsumed;		// the slide runs to its end first
 		if (aType != EEventKey)
 			return EKeyWasNotConsumed;
 		if (iPage == EPageEvents)
@@ -1553,8 +1772,8 @@ public:
 		const TInt cols = Cols();
 		if (Items() == 0)
 			{
-			if (aKey.iCode == EKeyLeftArrow) SetPage(iPage - 1);
-			else if (aKey.iCode == EKeyRightArrow) SetPage(iPage + 1);
+			if (aKey.iCode == EKeyLeftArrow) AnimatePage(-1);
+			else if (aKey.iCode == EKeyRightArrow) AnimatePage(1);
 			else return EKeyWasNotConsumed;
 			return EKeyWasConsumed;
 			}
@@ -1564,11 +1783,11 @@ public:
 			switch (aKey.iCode)
 				{
 				case EKeyLeftArrow:
-					if (iSel % cols == 0) { SetPage(iPage - 1); return EKeyWasConsumed; }
+					if (iSel % cols == 0) { AnimatePage(-1); return EKeyWasConsumed; }
 					iSel--;
 					break;
 				case EKeyRightArrow:
-					if (iSel % cols == cols - 1 || iSel == Items() - 1) { SetPage(iPage + 1); return EKeyWasConsumed; }
+					if (iSel % cols == cols - 1 || iSel == Items() - 1) { AnimatePage(1); return EKeyWasConsumed; }
 					iSel++;
 					break;
 				case EKeyUpArrow: if (iSel >= cols) iSel -= cols; break;
@@ -1659,6 +1878,7 @@ public:
 		switch (aE.iType)
 			{
 			case TPointerEvent::EButton1Down:
+				FinishAnimNow();
 				iDownPos = aE.iPosition;
 				iDownScroll = iScroll;
 				iDragging = EFalse;
@@ -1683,8 +1903,13 @@ public:
 				const TInt dx = aE.iPosition.iX - iDownPos.iX;
 				if (!iDragging && !iSwiping && (dx > Sc(12) || dx < -Sc(12)) && (dx > 0 ? dx : -dx) > (dy > 0 ? dy : -dy))
 					{
-					iSwiping = ETrue;		// a horizontal gesture changes the page when the finger lifts
+					iSwiping = ETrue;		// a horizontal gesture moves the strip with the finger
 					iHoldTimer->Cancel();
+					}
+				if (iSwiping)
+					{
+					StripDrag(dx);
+					break;
 					}
 				if (!iSwiping && (iDragging || dy > Sc(8) || dy < -Sc(8)))
 					{
@@ -1720,7 +1945,9 @@ public:
 					break;
 					}
 				const TInt dx = aE.iPosition.iX - iDownPos.iX;
-				if (iSwiping && (dx > Sc(48) || dx < -Sc(48)))
+				if (iSwiping && iStripOn)
+					StripRelease();
+				else if (iSwiping && (dx > Sc(48) || dx < -Sc(48)))
 					SetPage(dx < 0 ? iPage + 1 : iPage - 1);
 				else if (!iDragging && !iSwiping && !iHeld)
 					HandleTap(aE.iPosition);
@@ -1860,6 +2087,15 @@ private:
 	CPeriodic* iClock = NULL;
 	CPeriodic* iWatch = NULL;
 	CPeriodic* iPreviewTimer = NULL;
+	// the strip: Events | Applications | Open apps are one horizontal surface. While a finger drags (or a settle runs) the three pages are
+	// pictures (iPg, one per page, window sized) and Draw() lays them side by side at the offset iStripX, wrapping at the ends
+	CFbsBitmap* iPg[3] = { NULL, NULL, NULL };
+	TBool iStripOn = EFalse;
+	TInt iStripX = 0, iAnimFrom = 0, iAnimTo = 0, iAnimDur = 1, iAnimPage = -1;
+	TInt64 iAnimStart = 0;
+	CPeriodic* iAnimTimer = NULL;
+	TInt iVelX[2], iVelT[2];
+	TInt iFrames = 0, iFrameTicks = 0, iDragStartMs = 0;
 	TPoint iPinch[2];
 	TBool iPinchDown[2] = { EFalse, EFalse }, iPinchDone = EFalse;
 	TInt iPinchStart = 0;
