@@ -256,6 +256,12 @@ private:
 	TBool iWaiting = EFalse;
 	};
 
+class MEtStatusActions
+	{
+public:
+	virtual void StatusLock() = 0;
+	};
+
 class CEtHomeContainer : public CCoeControl, public MEtSignalObserver
 	{
 public:
@@ -1088,7 +1094,8 @@ public:
 			}
 		}
 	// the status menu (a tap on the status bar, guide 20-phone): the battery, the Control Panel and the Etesian shell settings
-	TInt MenuRows() const { return 3; }
+	void SetStatusActions(MEtStatusActions* aAct) { iStatusAct = aAct; }
+	TInt MenuRows() const { return 4; }
 	TRect MenuRow(TInt aI) const { return TRect(0, iStatusH + aI * Sc(44), iW, iStatusH + (aI + 1) * Sc(44)); }
 	void DrawStatusMenu(CWindowGc& gc) const
 		{
@@ -1110,7 +1117,7 @@ public:
 					t.Copy(_L("Battery"));
 				}
 			else
-				t.Copy(i == 1 ? _L("Settings") : _L("Etesian shell"));
+				t.Copy(i == 1 ? TPtrC(_L("Settings")) : (i == 2 ? TPtrC(_L("Etesian shell")) : TPtrC(_L("Lock phone"))));
 			const TRect r = MenuRow(i);
 			gc.DrawText(t, TRect(r.iTl.iX + iMargin, r.iTl.iY, r.iBr.iX - iMargin, r.iBr.iY), Baseline(iF[EFBody], r), CGraphicsContext::ELeft);
 			}
@@ -1617,7 +1624,15 @@ public:
 			iStatusMenu = EFalse;
 			for (TInt i = 1; i < MenuRows(); i++)
 				if (MenuRow(i).Contains(aP))
-					LaunchUid(i == 1 ? 0x100058ecu : 0xE7016B52u);
+					{
+					if (i == 3)
+						{
+						if (iStatusAct)
+							iStatusAct->StatusLock();
+						}
+					else
+						LaunchUid(i == 1 ? 0x100058ecu : 0xE7016B52u);
+					}
 			DrawNow();
 			return;
 			}
@@ -1733,6 +1748,7 @@ private:
 	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse, iEdit = EFalse, iHeld = EFalse;
 	TInt iCardLevel = 0;		// the Open apps zoom level set by a pinch or the keys 1..4 (0 = the default for the orientation)
 	TInt iBatt = -1, iBars = -1;		// battery level 0..7 (HWRM power state), signal bars (CTelephony); -1 = unknown
+	MEtStatusActions* iStatusAct = NULL;
 	TBool iCharging = EFalse, iStatusMenu = EFalse, iEditApps = EFalse;
 	TInt iDragApp = -1;
 	TPoint iDragPos;
@@ -2279,6 +2295,11 @@ public:
 		delete iDev;
 		iWs.Close();
 		}
+	void Lock()
+		{
+		iKl.EnableKeyLock();
+		RDebug::Printf("PH: [etesianlock] locked from the status menu");
+		}
 private:
 	CEtLock(MEtLockSource& aSrc) : CActive(EPriorityStandard), iSrc(aSrc) {}
 	void ConstructL()
@@ -2496,7 +2517,7 @@ private:
 	TInt iLastMin = -1;
 	};
 
-class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions, public MEtLockSource
+class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions, public MEtLockSource, public MEtStatusActions
 	{
 public:
 	void ConstructL()
@@ -2528,6 +2549,7 @@ public:
 		RDebug::Printf("PH: [etesianhome] edge gestures: %d", ee);
 		TRAPD(le, iLock = CEtLock::NewL(*this));
 		RDebug::Printf("PH: [etesianhome] lock screen layer: %d", le);
+		iView->SetStatusActions(this);
 		}
 	// ---- MEtEdgeActions: what the edge swipes do
 	void ToHome(TBool aOpenApps)
@@ -2577,6 +2599,7 @@ public:
 			delete sn;
 			}
 		}
+	void StatusLock() { if (iLock) iLock->Lock(); }
 	void LockRefresh() { if (iView) iView->RefreshEvents(); }
 	TInt LockCardCount() { return iView ? iView->LockCardCount() : 0; }
 	void LockCard(TInt aI, TDes& aTitle, TDes& aSub) { if (iView) iView->LockCard(aI, aTitle, aSub); }
