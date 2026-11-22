@@ -186,6 +186,7 @@ public:
 	};
 
 enum TEtPage { EPageEvents = 0, EPageApps = 1, EPageOpen = 2 };
+static const TBool KShowPageDots = EFalse;		// a setting in the guide; off by default
 // the fonts of the Etesian type scale (guide 03)
 enum TEtFont { EFLabel, EFBody, EFTitle, EFSum, EFXs, EFXsB, EFBtn, EFDay, EFDate, EFCount };
 
@@ -444,8 +445,8 @@ public:
 		}
 	void SetPage(TInt aPage)
 		{
-		if (aPage < EPageEvents) aPage = EPageEvents;
-		if (aPage > EPageOpen) aPage = EPageOpen;
+		if (aPage < EPageEvents) aPage = EPageOpen;		// paging wraps (guide 20-phone, Home views)
+		if (aPage > EPageOpen) aPage = EPageEvents;
 		iPage = aPage;
 		iEdit = EFalse;
 		iScroll = 0;
@@ -961,6 +962,11 @@ public:
 		gc.UseFont(iF[EFDate]);
 		gc.SetPenColor(Rgb(KColFg2));
 		gc.DrawText(date, dt, Baseline(iF[EFDate], dt), CGraphicsContext::ELeft);
+		if (EventCount() == 0)
+			{
+			gc.DiscardFont();
+			return;			// no empty section and no filler text (guide 16-os-rules 13): the day and the date only
+			}
 		// section header: a small bold secondary label, right-aligned, with a hairline to its left
 		const TRect sh(iMargin, dt.iBr.iY + Sc(8), iW - iMargin, dt.iBr.iY + Sc(8) + iF[EFXsB]->HeightInPixels());
 		gc.UseFont(iF[EFXsB]);
@@ -970,15 +976,6 @@ public:
 		gc.SetPenSize(TSize(1, 1));
 		gc.DrawLine(TPoint(sh.iTl.iX, sh.iTl.iY + sh.Height() / 2), TPoint(sh.iBr.iX - lw - Sc(8), sh.iTl.iY + sh.Height() / 2));
 		gc.DiscardFont();
-		if (EventCount() == 0)
-			{
-			gc.UseFont(iF[EFBody]);
-			gc.SetPenColor(Rgb(KColFg2));
-			const TRect r(0, EventsTop(), iW, iH - iBottomH);
-			gc.DrawText(_L("No new events"), TRect(r.iTl, TSize(r.Width(), Sc(40))), Baseline(iF[EFBody], TRect(r.iTl, TSize(r.Width(), Sc(40)))), CGraphicsContext::ECenter);
-			gc.DiscardFont();
-			return;
-			}
 		TInt row = 0;
 		for (TInt k = 0; k < 2; k++)
 			{
@@ -1058,7 +1055,10 @@ public:
 			DrawLitButton(gc, CloseAllRect(), _L("Close all"));
 			return;
 			}
-		// page dots: Events | Applications | Open apps, the current one lit
+		// page dots: Events | Applications | Open apps, the current one lit. Hidden by default (guide 23: "Page dots hidden by default");
+		// the swipe, Left/Right and the edge gestures page the views, and paging wraps
+		if (!KShowPageDots)
+			return;
 		gc.SetPenStyle(CGraphicsContext::ENullPen);
 		const TInt dr = Sc(3), gap = Sc(14), cy = iH - iBottomH / 2;
 		for (TInt d = 0; d < 3; d++)
@@ -1216,7 +1216,7 @@ public:
 				if (CloseRect(i).Contains(aP)) { CloseCard(i); return; }
 			return;		// in edit mode a card does not launch
 			}
-		if (aP.iY >= iH - iBottomH)
+		if (KShowPageDots && aP.iY >= iH - iBottomH)
 			{
 			// a dot: x decides the page
 			const TInt gap = Sc(14);
@@ -1302,7 +1302,347 @@ private:
 	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse, iEdit = EFalse, iHeld = EFalse;
 	};
 
-class CEtHomeAppUi : public CAknAppUi
+// ---- edge gestures (guide 20-phone.md section 1 and 23-phone-behaviour.md "Edge swipes over an app") ----
+// On by default: they are the N9's own behaviour, and "pure N9 first" only puts what the N9 did NOT have behind a setting.
+// No WSERV plug-in (not installable) and nothing stock replaced: Home runs its own session with an always-in-front, hidden window group that holds four
+// thin, fully transparent windows (left, right, bottom, top). They are in front only while Home is in the background. A drag that starts in one of them
+// and moves INWARD is a gesture: left / right / bottom minimise (Home, Open apps), top closes the application in front, and bottom + 500 ms still shows the
+// Open apps (the peek). Anything else that starts there (a tap, a drag along the edge) is handed back to the application: the strips step aside and the
+// pointer sequence is replayed to what is under them, so taps and scrolling near the edges keep working.
+// Sizes are millimetres (the guide's dp: 1 dp = 1/160 inch = 0.159 mm): edge zone 18 dp = 2.9 mm, slop 8 dp = 1.3 mm, status bar 24 dp + band 24 dp = 3.8 + 3.8 mm.
+class MEtEdgeActions
+	{
+public:
+	virtual void EdgeMinimise() = 0;		// left, right, bottom: Home to the front, Open apps
+	virtual void EdgePeek() = 0;			// bottom and hold: the Open apps
+	virtual void EdgeClosed() = 0;			// the front application was asked to close: Home to the front, Open apps
+	};
+
+class CEtEdges : public CActive
+	{
+public:
+	enum { ELeft, ERight, EBottom, ETop, ETopBand, ECount };		// ETopBand: the 24 dp under the status bar, between the side zones, also "top"
+	static CEtEdges* NewL(MEtEdgeActions& aAct, TInt aHomeWg)
+		{
+		CEtEdges* e = new (ELeave) CEtEdges(aAct, aHomeWg);
+		CleanupStack::PushL(e);
+		e->ConstructL();
+		CleanupStack::Pop(e);
+		return e;
+		}
+	~CEtEdges()
+		{
+		Cancel();
+		delete iTimer;
+		iPoints.Close();
+		for (TInt i = 0; i < ECount; i++)
+			iWin[i].Close();
+		iGroup.Close();
+		delete iDev;
+		iWs.Close();
+		}
+	// the strips are in front of the applications only while Home is behind them
+	void SetEnabled(TBool aOn)
+		{
+		iEnabled = aOn;
+		Apply();
+		}
+	void Relayout()
+		{
+		Geometry();
+		Apply();
+		}
+private:
+	CEtEdges(MEtEdgeActions& aAct, TInt aHomeWg) : CActive(EPriorityStandard), iAct(aAct), iHomeWg(aHomeWg) {}
+	void ConstructL()
+		{
+		CActiveScheduler::Add(this);
+		User::LeaveIfError(iWs.Connect());
+		iDev = new (ELeave) CWsScreenDevice(iWs);
+		User::LeaveIfError(iDev->Construct());
+		iGroup = RWindowGroup(iWs);
+		User::LeaveIfError(iGroup.Construct(0x45444745, EFalse));		// not focusable: key events stay with the application
+		iGroup.EnableReceiptOfFocus(EFalse);
+		iGroup.SetOrdinalPosition(0, 1500);							// above the applications (always-at-front is 1000)
+		CApaWindowGroupName* gn = CApaWindowGroupName::NewLC(iWs, iGroup.Identifier());
+		gn->SetHidden(ETrue);
+		gn->SetSystem(ETrue);
+		gn->SetWindowGroupName(iGroup);
+		CleanupStack::PopAndDestroy(gn);
+		for (TInt i = 0; i < ECount; i++)
+			{
+			iWin[i] = RWindow(iWs);
+			User::LeaveIfError(iWin[i].Construct(iGroup, i + 1));
+			iWin[i].SetRequiredDisplayMode(EColor16MA);
+			iWin[i].SetTransparencyAlphaChannel();						// an error where the image has no alpha windows: the strips are then blank
+			iWin[i].SetBackgroundColor(TRgb(0, 0, 0, 0));
+			iWin[i].SetPointerGrab(ETrue);
+			iWin[i].PointerFilter(EPointerFilterDrag | EPointerFilterMove | EPointerFilterEnterExit, 0);
+			}
+		iTimer = CPeriodic::NewL(CActive::EPriorityStandard);
+		Geometry();
+		for (TInt i = 0; i < ECount; i++)
+			iWin[i].Activate();
+		Apply();
+		Listen();
+		}
+	void Listen()
+		{
+		iWs.EventReady(&iStatus);
+		SetActive();
+		}
+	void DoCancel()
+		{
+		iWs.EventReadyCancel();
+		}
+	// tenths of a millimetre to pixels, through the screen's own twips (1 mm = 56.69 twips); a sane fallback when the device reports nonsense
+	TInt Mm(TInt aTenthMm) const
+		{
+		const TInt twips = aTenthMm * 5669 / 1000;
+		TInt px = iDev->HorizontalTwipsToPixels(twips);
+		const TSize s = iDev->SizeInPixels();
+		const TInt shortSide = s.iWidth < s.iHeight ? s.iWidth : s.iHeight;
+		if (px < 3 || px > shortSide / 4)
+			px = shortSide * aTenthMm / 1000;						// the 360 px design: about 1/100 of the short side per mm
+		return px < 6 ? 6 : px;
+		}
+	void Geometry()
+		{
+		const TSize s = iDev->SizeInPixels();
+		iScreen = s;
+		iZone = Mm(29);
+		iSlop = Mm(13);
+		const TInt top = Mm(38), band = Mm(38);		// the status bar 24 dp = 3.8 mm; the band under it 24 dp
+		iWin[ELeft].SetExtent(TPoint(0, top), TSize(iZone, s.iHeight - top));
+		iWin[ERight].SetExtent(TPoint(s.iWidth - iZone, top), TSize(iZone, s.iHeight - top));
+		iWin[EBottom].SetExtent(TPoint(iZone, s.iHeight - iZone), TSize(s.iWidth - 2 * iZone, iZone));
+		iWin[ETop].SetExtent(TPoint(0, 0), TSize(s.iWidth, top));
+		iWin[ETopBand].SetExtent(TPoint(iZone, top), TSize(s.iWidth - 2 * iZone, band));
+		RDebug::Printf("PH: [etesianedges] screen %dx%d zone %d slop %d top %d px", s.iWidth, s.iHeight, iZone, iSlop, top);
+		}
+	void Apply()
+		{
+		for (TInt i = 0; i < ECount; i++)
+			iWin[i].SetVisible(iEnabled && !iPassing);
+		iWs.Flush();
+		}
+	void RunL()
+		{
+		TWsEvent e;
+		iWs.GetEvent(e);
+		if (e.Type() == EEventPointer)
+			Pointer(e.Handle() - 1, *e.Pointer());
+		Listen();
+		}
+	TInt Inward(const TPoint& aP) const
+		{
+		switch (iEdge)
+			{
+			case ELeft: return aP.iX - iStart.iX;
+			case ERight: return iStart.iX - aP.iX;
+			case EBottom: return iStart.iY - aP.iY;
+			default: return aP.iY - iStart.iY;
+			}
+		}
+	TInt Across(const TPoint& aP) const
+		{
+		const TInt d = (iEdge == ELeft || iEdge == ERight) ? aP.iY - iStart.iY : aP.iX - iStart.iX;
+		return d < 0 ? -d : d;
+		}
+	void Pointer(TInt aEdge, const TPointerEvent& aPe)
+		{
+		const TPoint p = aPe.iParentPosition;
+		switch (aPe.iType)
+			{
+			case TPointerEvent::EButton1Down:
+				if (aEdge < 0 || aEdge >= ECount)
+					return;
+				iEdge = (aEdge == ETopBand) ? (TInt)ETop : aEdge;
+				iStart = p;
+				iAnchor = p;
+				iGesture = EFalse;
+				iDone = EFalse;
+				iDownTime.UniversalTime();
+				iPoints.Reset();
+				iPoints.Append(p);
+				iTracking = ETrue;
+				break;
+			case TPointerEvent::EDrag:
+				if (!iTracking)
+					return;
+				if (iPoints.Count() < 200)
+					iPoints.Append(p);
+				if (!iGesture && !iDone)
+					{
+					const TInt in = Inward(p), ac = Across(p);
+					if (in > iSlop && in > ac)
+						iGesture = ETrue;
+					else if (ac > 2 * iSlop)
+						Pass(ETrue);						// along the edge: a scroll or a drag for the application
+					}
+				if (iGesture && iEdge == EBottom && !iDone)
+					{
+					// hold still for 500 ms (within the slop) anywhere on the swipe up: the peek; moving starts the wait again
+					const TInt dx = p.iX - iAnchor.iX, dy = p.iY - iAnchor.iY;
+					if (dx * dx + dy * dy > iSlop * iSlop)
+						{
+						iAnchor = p;
+						StartHold();
+						}
+					else if (!iTimer->IsActive())
+						StartHold();
+					}
+				break;
+			case TPointerEvent::EButton1Up:
+				if (!iTracking)
+					return;
+				iTimer->Cancel();
+				if (iGesture && !iDone)
+					Finish(p);
+				else if (!iDone)
+					Pass(EFalse);
+				iTracking = EFalse;
+				iGesture = EFalse;
+				break;
+			default:
+				break;
+			}
+		}
+	void StartHold()
+		{
+		iTimer->Cancel();
+		iTimer->Start(500000, 500000, TCallBack(HoldTick, this));
+		}
+	static TInt HoldTick(TAny* aThis)
+		{
+		CEtEdges* s = static_cast<CEtEdges*>(aThis);
+		s->iTimer->Cancel();
+		if (s->iTracking && s->iGesture && !s->iDone)
+			{
+			s->iDone = ETrue;
+			RDebug::Printf("PH: [etesianedges] bottom swipe + hold: Open apps");
+			s->iAct.EdgePeek();
+			}
+		return 0;
+		}
+	// letting go: commit past half the screen (N9), or on a quick flick (900 dp/s = 143 mm/s) inward once past 8%
+	void Finish(const TPoint& aP)
+		{
+		iDone = ETrue;
+		const TInt in = Inward(aP);
+		const TInt span = (iEdge == EBottom || iEdge == ETop) ? iScreen.iHeight : iScreen.iWidth;
+		TTime now;
+		now.UniversalTime();
+		TInt dt = (TInt)(now.MicroSecondsFrom(iDownTime).Int64() / 1000);
+		if (dt < 1)
+			dt = 1;
+		const TInt perSec = in * 1000 / dt;
+		const TInt flick = Mm(10) * 143;
+		const TBool commit = (perSec > flick) ? in * 100 > span * 8 : in * 100 > span * 50;
+		RDebug::Printf("PH: [etesianedges] edge %d inward %d of %d, %d px/s: %s", iEdge, in, span, perSec, commit ? "commit" : "spring back");
+		if (!commit)
+			return;
+		if (iEdge == ETop)
+			CloseFront();
+		else
+			iAct.EdgeMinimise();
+		}
+	void CloseFront()
+		{
+		const TInt fg = iWs.GetFocusWindowGroup();
+		if (fg <= 0 || fg == iHomeWg || fg == iGroup.Identifier())
+			return;
+		CApaWindowGroupName* n = NULL;
+		TRAPD(e, n = CApaWindowGroupName::NewL(iWs, fg));
+		if (e != KErrNone)
+			return;
+		const TBool sys = n->IsSystem();
+		delete n;
+		if (sys)
+			return;
+		TApaTask t(iWs);
+		t.SetWgId(fg);
+		t.EndTask();
+		RDebug::Printf("PH: [etesianedges] top swipe: closing window group %d", fg);
+		iAct.EdgeClosed();
+		}
+	// raw events are in the digitiser's (portrait) coordinates: a landscape screen mode is the portrait one turned (as the compositor's FilterPointer reads them)
+	TPoint Digitiser(const TPoint& aP) const
+		{
+		if (iScreen.iWidth > iScreen.iHeight)
+			return TPoint(iScreen.iHeight - 1 - aP.iY, aP.iX);
+		return aP;
+		}
+	// not a gesture: the strips step aside and the pointer sequence goes to what is under them
+	void Pass(TBool aMoved)
+		{
+		if (iDone)
+			return;
+		iDone = ETrue;
+		iPassing = ETrue;
+		Apply();
+		TRawEvent ev;
+		const TPoint s0 = iPoints.Count() ? iPoints[0] : iStart;
+		ev.Set(TRawEvent::EPointerMove, Digitiser(s0).iX, Digitiser(s0).iY);
+		iWs.SimulateRawEvent(ev);
+		ev.Set(TRawEvent::EButton1Down, Digitiser(s0).iX, Digitiser(s0).iY);
+		iWs.SimulateRawEvent(ev);
+		if (aMoved)
+			{
+			// the finger is still down: its path so far is replayed, the rest of it (and the up) goes straight to the application
+			for (TInt i = 1; i < iPoints.Count(); i++)
+				{
+				ev.Set(TRawEvent::EPointerMove, Digitiser(iPoints[i]).iX, Digitiser(iPoints[i]).iY);
+				iWs.SimulateRawEvent(ev);
+				}
+			}
+		else
+			{
+			// a tap: the up follows after a real finger's 100 ms
+			iUpAt = s0;
+			iUpPending = ETrue;
+			}
+		iWs.Flush();
+		RDebug::Printf("PH: [etesianedges] edge %d: %s, handed to the application (%d points)", iEdge, aMoved ? "along the edge" : "tap", iPoints.Count());
+		iTimer->Cancel();
+		iTimer->Start(iUpPending ? 100000 : 400000, 400000, TCallBack(BackTick, this));
+		}
+	static TInt BackTick(TAny* aThis)
+		{
+		CEtEdges* s = static_cast<CEtEdges*>(aThis);
+		s->iTimer->Cancel();
+		if (s->iUpPending)
+			{
+			s->iUpPending = EFalse;
+			TRawEvent ev;
+			ev.Set(TRawEvent::EButton1Up, s->Digitiser(s->iUpAt).iX, s->Digitiser(s->iUpAt).iY);
+			s->iWs.SimulateRawEvent(ev);
+			s->iWs.Flush();
+			s->iTimer->Start(300000, 300000, TCallBack(BackTick, s));
+			return 0;
+			}
+		s->iPassing = EFalse;
+		s->Apply();
+		return 0;
+		}
+private:
+	MEtEdgeActions& iAct;
+	TInt iHomeWg;
+	RWsSession iWs;
+	CWsScreenDevice* iDev = NULL;
+	RWindowGroup iGroup;
+	RWindow iWin[ECount];
+	CPeriodic* iTimer = NULL;
+	RArray<TPoint> iPoints;
+	TSize iScreen;
+	TInt iZone = 20, iSlop = 8, iEdge = 0;
+	TPoint iStart, iAnchor, iUpAt;
+	TBool iUpPending = EFalse;
+	TTime iDownTime;
+	TBool iEnabled = EFalse, iPassing = EFalse, iTracking = EFalse, iGesture = EFalse, iDone = EFalse;
+	};
+
+class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions
 	{
 public:
 	void ConstructL()
@@ -1329,6 +1669,46 @@ public:
 		const TUint32 KPSIdlePhase1OkKey = 0x43;
 		TInt ir = RProperty::Set(KPSUidStartupCat, KPSIdlePhase1OkKey, 101);
 		RDebug::Printf("PH: [etesianhome] idle phase 1 ok published: %d", ir);
+		// the edge gestures (on by default, the N9's own behaviour): they act while Home is in the background
+		TRAPD(ee, iEdges = CEtEdges::NewL(*this, iCoeEnv->RootWin().Identifier()));
+		RDebug::Printf("PH: [etesianhome] edge gestures: %d", ee);
+		}
+	// ---- MEtEdgeActions: what the edge swipes do
+	void ToHome(TBool aOpenApps)
+		{
+		if (!iView)
+			return;
+		if (aOpenApps)
+			{
+			iView->CaptureForeground();		// the front application's last frame, for its Open apps card
+			iView->ShowOpenApps();
+			}
+		TApaTask self(iEikonEnv->WsSession());
+		self.SetWgId(iCoeEnv->RootWin().Identifier());
+		self.BringToForeground();
+		}
+	void EdgeMinimise()
+		{
+		RDebug::Printf("PH: [etesianhome] edge swipe: minimise to Home");
+		ToHome(ETrue);
+		}
+	void EdgePeek()
+		{
+		RDebug::Printf("PH: [etesianhome] edge swipe: Open apps peek");
+		ToHome(ETrue);
+		}
+	void EdgeClosed()
+		{
+		RDebug::Printf("PH: [etesianhome] edge swipe: closed, Open apps");
+		if (iView)
+			iView->ShowOpenApps();
+		ToHome(EFalse);
+		}
+	void HandleForegroundEventL(TBool aForeground)
+		{
+		CAknAppUi::HandleForegroundEventL(aForeground);
+		if (iEdges)
+			iEdges->SetEnabled(!aForeground);		// strips in front of the applications only while Home is behind them
 		}
 	void HandleWsEventL(const TWsEvent& aEvent, CCoeControl* aDestination)
 		{
@@ -1353,6 +1733,7 @@ public:
 		}
 	~CEtHomeAppUi()
 		{
+		delete iEdges;
 		if (iMenuKey >= 0)
 			iCoeEnv->RootWin().CancelCaptureKeyUpAndDowns(iMenuKey);
 		if (iView)
@@ -1362,6 +1743,8 @@ public:
 	void HandleResourceChangeL(TInt aType)
 		{
 		CAknAppUi::HandleResourceChangeL(aType);
+		if (aType == KEikDynamicLayoutVariantSwitch && iEdges)
+			iEdges->Relayout();
 		if (aType == KEikDynamicLayoutVariantSwitch && iView)
 			iView->Relayout(ApplicationRect());
 		else if (aType == KAknsMessageSkinChange && iView)
@@ -1370,6 +1753,7 @@ public:
 private:
 	CEtHomeContainer* iView = NULL;
 	TInt iMenuKey = -1;
+	CEtEdges* iEdges = NULL;
 	};
 
 class CEtHomeDocument : public CAknDocument
