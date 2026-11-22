@@ -2379,7 +2379,11 @@ private:
 		if (locked && !self->iShown)
 			self->Show();
 		else if (!locked && self->iShown)
-			self->Hide();
+			{
+			// the system lifted the lock (the power key wakes it): the swipe is the only way out while the layer is up
+			self->iKl.EnableKeyLock();
+			self->Redraw();
+			}
 		else if (locked)
 			self->Redraw();			// the clock minute
 		return 0;
