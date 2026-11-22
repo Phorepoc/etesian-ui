@@ -521,8 +521,8 @@ public:
 							}
 						const TInt r = rsum / 4;		// per mille
 						const TInt fill = cnt * 100 / (bw * bh);
-						// r = 2^(-1/n): n 2.7 -> 774, n 5.5 -> 881 (per mille)
-						result = r >= 770 && r <= 890 && fill >= 80 && fill <= 93;
+						// r = 2^(-1/n): n 2.5 -> 758, n 5.5 -> 881 (per mille)
+						result = r >= 755 && r <= 890 && fill >= 80 && fill <= 93;
 						RDebug::Printf("PH: [etesianhome] icon 0x%x mask %dx%d box %dx%d diag r %d fill %d -> squircle %d", aUid, w, h, bw, bh, r, fill, result);
 						}
 					else
@@ -1935,6 +1935,8 @@ public:
 		iEnabled = aOn;
 		if (!aOn)
 			HideShade();
+		else
+			Geometry();
 		Apply();
 		}
 	void Relayout()
@@ -1953,6 +1955,7 @@ private:
 		iGroup = RWindowGroup(iWs);
 		User::LeaveIfError(iGroup.Construct(0x45444745, EFalse));		// not focusable: key events stay with the application
 		iGroup.EnableReceiptOfFocus(EFalse);
+		iGroup.EnableScreenChangeEvents();
 		iGroup.SetOrdinalPosition(0, 1500);							// above the applications (always-at-front is 1000)
 		CApaWindowGroupName* gn = CApaWindowGroupName::NewLC(iWs, iGroup.Identifier());
 		gn->SetHidden(ETrue);
@@ -2006,8 +2009,22 @@ private:
 			px = shortSide * aTenthMm / 1000;						// the 360 px design: about 1/100 of the short side per mm
 		return px < 6 ? 6 : px;
 		}
+	// the screen mode in front: an application that forces landscape runs the screen in another mode than Home, and a window group lays its windows
+	// out in its own mode, so the strips follow the mode that is in effect (else a top swipe on a landscape app hits strips made for portrait)
+	void SyncMode()
+		{
+		const TInt mode = iDev->CurrentScreenMode();
+		if (mode != iMode)
+			{
+			iMode = mode;
+			iDev->SetAppScreenMode(mode);
+			iDev->SetScreenModeEnforcement(CWsScreenDevice::ESizeEnforcementNone);
+			RDebug::Printf("PH: [etesianedges] screen mode %d", mode);
+			}
+		}
 	void Geometry()
 		{
+		SyncMode();
 		const TSize s = iDev->SizeInPixels();
 		iScreen = s;
 		iZone = Mm(29);
@@ -2048,7 +2065,12 @@ private:
 		{
 		TWsEvent e;
 		iWs.GetEvent(e);
-		if (e.Type() == EEventPointer)
+		if (e.Type() == EEventScreenDeviceChanged)
+			{
+			Geometry();
+			Apply();
+			}
+		else if (e.Type() == EEventPointer)
 			Pointer(e.Handle() - 1, *e.Pointer());
 		Listen();
 		}
@@ -2377,7 +2399,7 @@ private:
 	CPeriodic* iTimer = NULL;
 	RArray<TPoint> iPoints;
 	TSize iScreen;
-	TInt iZone = 20, iSlop = 8, iEdge = 0;
+	TInt iMode = -1, iZone = 20, iSlop = 8, iEdge = 0;
 	TPoint iStart, iAnchor, iUpAt;
 	TBool iUpPending = EFalse;
 	RWindow iShade;
