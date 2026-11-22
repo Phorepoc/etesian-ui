@@ -336,7 +336,7 @@ public:
 		if (iCardCols == 1)
 			{
 			// the carousel: one card that fits the screen's height, centred
-			const TInt availH = iH - iStatusH - iBottomH - Sc(16);
+			const TInt availH = iH - iStatusH - iGap - iXSize / 3 - iBottomH - iGap - Sc(8);
 			iPrevH = availH - Sc(6) - Sc(6) - iLabelH - Sc(8);
 			iPrevW = iPrevH * iW / iH;
 			iCardW = iPrevW + Sc(12);
