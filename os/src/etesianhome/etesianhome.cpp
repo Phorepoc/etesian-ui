@@ -2912,7 +2912,13 @@ private:
 		{
 		TWsEvent e;
 		iWs.GetEvent(e);
-		if (e.Type() == EEventPointer && iShown)
+		if (e.Type() == EEventRedraw && iShown)
+			{
+			// the window server asks for the picture again (the display came back, the window was uncovered): else it stays the background colour
+			iDrawn = EFalse;
+			Redraw();
+			}
+		else if (e.Type() == EEventPointer && iShown)
 			{
 			const TPointerEvent& pe = *e.Pointer();
 			if (pe.iType == TPointerEvent::EButton1Down)
