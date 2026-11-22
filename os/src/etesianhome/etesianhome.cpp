@@ -49,6 +49,7 @@
 #include <w32std.h>
 #include <etel3rdparty.h>
 #include <aknsoftnotifier.h>
+#include <aknkeylock.h>
 #include "../phedevmenu/pheshellapps.h"
 #include "etesianhome.hrh"
 
@@ -896,6 +897,24 @@ public:
 		}
 
 	// ---- Events: what the notifier sources publish that an application may read
+	// the lock screen's cards: the same two sources as the Events page
+	TInt LockCardCount() const { return EventCount(); }
+	void LockCard(TInt aI, TDes& aTitle, TDes& aSub) const
+		{
+		TInt row = 0;
+		for (TInt k = 0; k < 2; k++)
+			{
+			const TInt n = k == 0 ? iMissed : iUnread;
+			if (n <= 0)
+				continue;
+			if (row++ == aI)
+				{
+				aTitle.Copy(k == 0 ? TPtrC(_L("Missed calls")) : TPtrC(_L("Messages")));
+				aSub.Format(k == 0 ? TPtrC(_L("%d missed")) : TPtrC(_L("%d unread")), n);
+				return;
+				}
+			}
+		}
 	void RefreshEvents()
 		{
 		iMissed = 0;
@@ -2149,7 +2168,263 @@ private:
 	TBool iEnabled = EFalse, iPassing = EFalse, iTracking = EFalse, iGesture = EFalse, iDone = EFalse;
 	};
 
-class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions
+// ---- the lock screen layer (guide 20-phone, 23-phone-behaviour; audit item 5). The stock key guard (SysAp) stays the lock: the keys, the timing, the
+// device-lock code. While it is enabled this layer, a hidden always-in-front window group ABOVE the key guard (priority 20000), shows the Etesian lock
+// screen: the clock block, the newest notification cards (missed calls, unread messages: what Events reads) and "Swipe sideways to unlock". A swipe in
+// any direction past a quarter of the screen asks the key guard to open (RAknKeylock2). If this process dies the stock lock is simply what is left.
+class MEtLockSource
+	{
+public:
+	virtual void LockRefresh() = 0;
+	virtual TInt LockCardCount() = 0;
+	virtual void LockCard(TInt aI, TDes& aTitle, TDes& aSub) = 0;
+	};
+
+class CEtLock : public CActive
+	{
+public:
+	static CEtLock* NewL(MEtLockSource& aSrc)
+		{
+		CEtLock* l = new (ELeave) CEtLock(aSrc);
+		CleanupStack::PushL(l);
+		l->ConstructL();
+		CleanupStack::Pop(l);
+		return l;
+		}
+	~CEtLock()
+		{
+		Cancel();
+		delete iPoll;
+		iKl.Close();
+		iWin.Close();
+		iGroup.Close();
+		if (iDev)
+			{
+			for (TInt i = 0; i < 4; i++)
+				if (iF[i])
+					iDev->ReleaseFont(iF[i]);
+			}
+		delete iDev;
+		iWs.Close();
+		}
+private:
+	CEtLock(MEtLockSource& aSrc) : CActive(EPriorityStandard), iSrc(aSrc) {}
+	void ConstructL()
+		{
+		CActiveScheduler::Add(this);
+		User::LeaveIfError(iWs.Connect());
+		iDev = new (ELeave) CWsScreenDevice(iWs);
+		User::LeaveIfError(iDev->Construct());
+		iGroup = RWindowGroup(iWs);
+		User::LeaveIfError(iGroup.Construct(0x4C4F434B, EFalse));
+		iGroup.EnableReceiptOfFocus(EFalse);
+		iGroup.SetOrdinalPosition(0, 20000);						// above the key guard (always-at-front + 1) and the cap server backdrop (10000)
+		CApaWindowGroupName* gn = CApaWindowGroupName::NewLC(iWs, iGroup.Identifier());
+		gn->SetHidden(ETrue);
+		gn->SetSystem(ETrue);
+		gn->SetWindowGroupName(iGroup);
+		CleanupStack::PopAndDestroy(gn);
+		iWin = RWindow(iWs);
+		User::LeaveIfError(iWin.Construct(iGroup, 1));
+		iWin.SetBackgroundColor(TRgb(0, 0, 0));
+		iWin.SetPointerGrab(ETrue);
+		iWin.PointerFilter(EPointerFilterDrag | EPointerFilterMove | EPointerFilterEnterExit, 0);
+		Geometry();
+		iWin.Activate();
+		iWin.SetVisible(EFalse);
+		User::LeaveIfError(iKl.Connect());
+		iPoll = CPeriodic::NewL(CActive::EPriorityLow);
+		iPoll->Start(700000, 700000, TCallBack(PollTick, this));
+		Listen();
+		}
+	void Listen()
+		{
+		iWs.EventReady(&iStatus);
+		SetActive();
+		}
+	void DoCancel()
+		{
+		iWs.EventReadyCancel();
+		}
+	TInt Sc(TInt aDp) const { const TInt u = iScreen.iWidth < iScreen.iHeight ? iScreen.iWidth : iScreen.iHeight; return (aDp * u + 160) / 320; }
+	void Geometry()
+		{
+		iScreen = iDev->SizeInPixels();
+		iWin.SetExtent(TPoint(0, 0), iScreen);
+		for (TInt i = 0; i < 4; i++)
+			{
+			if (iF[i])
+				iDev->ReleaseFont(iF[i]);
+			iF[i] = NULL;
+			}
+		// Fira Sans (the image's typeface): the clock 64 dp light, the date 21 light, the card title 16 regular, the card text and the hint 14 regular
+		static const TInt px[4] = { 64, 21, 16, 14 };
+		for (TInt i = 0; i < 4; i++)
+			{
+			TFontSpec spec(i < 2 ? _L("Fira Sans Light") : _L("Fira Sans"), Sc(px[i]));
+			CFont* f = NULL;
+			if (iDev->GetNearestFontInPixels(f, spec) == KErrNone)
+				iF[i] = f;
+			}
+		}
+	static TInt PollTick(TAny* aThis)
+		{
+		CEtLock* self = static_cast<CEtLock*>(aThis);
+		const TBool locked = self->iKl.IsKeyLockEnabled();
+		if (locked && !self->iShown)
+			self->Show();
+		else if (!locked && self->iShown)
+			self->Hide();
+		else if (locked)
+			self->Redraw();			// the clock minute
+		return 0;
+		}
+	void Show()
+		{
+		iShown = ETrue;
+		iSrc.LockRefresh();
+		iLastMin = -1;
+		iGroup.SetOrdinalPosition(0, 20000);
+		iWin.SetVisible(ETrue);
+		Redraw();
+		RDebug::Printf("PH: [etesianlock] shown (%d cards)", iSrc.LockCardCount());
+		}
+	void Hide()
+		{
+		iShown = EFalse;
+		iWin.SetVisible(EFalse);
+		iWs.Flush();
+		RDebug::Printf("PH: [etesianlock] hidden");
+		}
+	void Redraw()
+		{
+		TTime now;
+		now.HomeTime();
+		TDateTime dt = now.DateTime();
+		const TInt key = dt.Hour() * 60 + dt.Minute();
+		if (key == iLastMin && iDrawn)
+			return;
+		iLastMin = key;
+		iDrawn = ETrue;
+		CWindowGc* gc = NULL;
+		if (iDev->CreateContext(gc) != KErrNone || !gc)
+			return;
+		gc->Activate(iWin);
+		iWin.Invalidate();
+		iWin.BeginRedraw();
+		gc->SetPenStyle(CGraphicsContext::ENullPen);
+		gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+		gc->SetBrushColor(TRgb(0, 0, 0));
+		gc->DrawRect(TRect(TPoint(0, 0), iScreen));
+		const TInt w = iScreen.iWidth, h = iScreen.iHeight;
+		TInt y = Sc(28);
+		TBuf<16> ts;
+		TRAP_IGNORE(now.FormatL(ts, _L("%J%:1%T")));
+		if (iF[0])
+			{
+			gc->UseFont(iF[0]);
+			gc->SetPenStyle(CGraphicsContext::ESolidPen);
+			gc->SetPenColor(TRgb(255, 255, 255));
+			const TRect r(0, y, w, y + iF[0]->HeightInPixels());
+			gc->DrawText(ts, r, iF[0]->AscentInPixels(), CGraphicsContext::ECenter);
+			y = r.iBr.iY;
+			gc->DiscardFont();
+			}
+		TBuf<40> ds;
+		TRAP_IGNORE(now.FormatL(ds, _L("%E %*D %N")));
+		if (iF[1])
+			{
+			gc->UseFont(iF[1]);
+			gc->SetPenColor(TRgb(0xC8, 0xC8, 0xC8));
+			const TRect r(0, y, w, y + iF[1]->HeightInPixels());
+			gc->DrawText(ds, r, iF[1]->AscentInPixels(), CGraphicsContext::ECenter);
+			y = r.iBr.iY + Sc(16);
+			gc->DiscardFont();
+			}
+		// the newest three notification cards: 8 dp radius, a lit 44 dp squircle, title 16, text 14
+		const TInt n = iSrc.LockCardCount() > 3 ? 3 : iSrc.LockCardCount();
+		for (TInt i = 0; i < n; i++)
+			{
+			TBuf<48> title, sub;
+			iSrc.LockCard(i, title, sub);
+			const TRect card(Sc(11), y, w - Sc(11), y + Sc(60));
+			gc->SetPenStyle(CGraphicsContext::ENullPen);
+			gc->SetBrushColor(TRgb(0x1C, 0x20, 0x26));
+			gc->DrawRoundRect(card, TSize(Sc(8), Sc(8)));
+			const TRect ic(card.iTl.iX + Sc(8), card.iTl.iY + Sc(8), card.iTl.iX + Sc(8) + Sc(44), card.iTl.iY + Sc(8) + Sc(44));
+			gc->SetBrushColor(TRgb(0x45, 0x91, 0xFF));
+			gc->DrawRoundRect(ic, TSize(Sc(14), Sc(14)));
+			gc->SetPenStyle(CGraphicsContext::ESolidPen);
+			gc->SetPenColor(TRgb(255, 255, 255));
+			if (iF[2])
+				{
+				gc->UseFont(iF[2]);
+				gc->DrawText(title, TRect(ic.iBr.iX + Sc(10), card.iTl.iY + Sc(6), card.iBr.iX - Sc(8), card.iTl.iY + Sc(32)), iF[2]->AscentInPixels(), CGraphicsContext::ELeft);
+				gc->DiscardFont();
+				}
+			if (iF[3])
+				{
+				gc->UseFont(iF[3]);
+				gc->SetPenColor(TRgb(0xC8, 0xC8, 0xC8));
+				gc->DrawText(sub, TRect(ic.iBr.iX + Sc(10), card.iTl.iY + Sc(32), card.iBr.iX - Sc(8), card.iBr.iY - Sc(4)), iF[3]->AscentInPixels(), CGraphicsContext::ELeft);
+				gc->DiscardFont();
+				}
+			y = card.iBr.iY + Sc(8);
+			}
+		if (iF[3])
+			{
+			gc->UseFont(iF[3]);
+			gc->SetPenStyle(CGraphicsContext::ESolidPen);
+			gc->SetPenColor(TRgb(0xC8, 0xC8, 0xC8));
+			gc->DrawText(_L("Swipe sideways to unlock"), TRect(0, h - Sc(40), w, h - Sc(8)), iF[3]->AscentInPixels(), CGraphicsContext::ECenter);
+			gc->DiscardFont();
+			}
+		iWin.EndRedraw();
+		gc->Deactivate();
+		delete gc;
+		iWs.Flush();
+		}
+	void RunL()
+		{
+		TWsEvent e;
+		iWs.GetEvent(e);
+		if (e.Type() == EEventPointer && iShown)
+			{
+			const TPointerEvent& pe = *e.Pointer();
+			if (pe.iType == TPointerEvent::EButton1Down)
+				iDown = pe.iParentPosition;
+			else if (pe.iType == TPointerEvent::EButton1Up)
+				{
+				const TInt dx = pe.iParentPosition.iX - iDown.iX, dy = pe.iParentPosition.iY - iDown.iY;
+				const TInt ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+				if (ax > iScreen.iWidth / 4 || ay > iScreen.iHeight / 4)
+					Unlock();
+				}
+			}
+		Listen();
+		}
+	void Unlock()
+		{
+		RDebug::Printf("PH: [etesianlock] swipe: unlock");
+		iKl.DisableKeyLock();
+		Hide();
+		}
+private:
+	MEtLockSource& iSrc;
+	RWsSession iWs;
+	CWsScreenDevice* iDev = NULL;
+	RWindowGroup iGroup;
+	RWindow iWin;
+	RAknKeylock2 iKl;
+	CPeriodic* iPoll = NULL;
+	CFont* iF[4] = { NULL, NULL, NULL, NULL };
+	TSize iScreen;
+	TPoint iDown;
+	TBool iShown = EFalse, iDrawn = EFalse;
+	TInt iLastMin = -1;
+	};
+
+class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions, public MEtLockSource
 	{
 public:
 	void ConstructL()
@@ -2179,6 +2454,8 @@ public:
 		// the edge gestures (on by default, the N9's own behaviour): they act while Home is in the background
 		TRAPD(ee, iEdges = CEtEdges::NewL(*this, iCoeEnv->RootWin().Identifier()));
 		RDebug::Printf("PH: [etesianhome] edge gestures: %d", ee);
+		TRAPD(le, iLock = CEtLock::NewL(*this));
+		RDebug::Printf("PH: [etesianhome] lock screen layer: %d", le);
 		}
 	// ---- MEtEdgeActions: what the edge swipes do
 	void ToHome(TBool aOpenApps)
@@ -2228,6 +2505,9 @@ public:
 			delete sn;
 			}
 		}
+	void LockRefresh() { if (iView) iView->RefreshEvents(); }
+	TInt LockCardCount() { return iView ? iView->LockCardCount() : 0; }
+	void LockCard(TInt aI, TDes& aTitle, TDes& aSub) { if (iView) iView->LockCard(aI, aTitle, aSub); }
 	void HandleForegroundEventL(TBool aForeground)
 		{
 		CAknAppUi::HandleForegroundEventL(aForeground);
@@ -2259,6 +2539,7 @@ public:
 		}
 	~CEtHomeAppUi()
 		{
+		delete iLock;
 		delete iEdges;
 		if (iMenuKey >= 0)
 			iCoeEnv->RootWin().CancelCaptureKeyUpAndDowns(iMenuKey);
@@ -2280,6 +2561,7 @@ private:
 	CEtHomeContainer* iView = NULL;
 	TInt iMenuKey = -1;
 	CEtEdges* iEdges = NULL;
+	CEtLock* iLock = NULL;
 	};
 
 class CEtHomeDocument : public CAknDocument
