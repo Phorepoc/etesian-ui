@@ -852,8 +852,12 @@ public:
 	void DrawFrame()
 		{
 		const TUint c0 = User::FastCounter();
+		// through the window's redraw (as DrawNow does): a compositing window server shows only what is drawn between BeginRedraw and EndRedraw
 		ActivateGc();
+		Window().Invalidate(Rect());
+		Window().BeginRedraw(Rect());
 		Draw(Rect());
+		Window().EndRedraw();
 		DeactivateGc();
 		iEikonEnv->WsSession().Flush();
 		iFrameTicks += (TInt)(User::FastCounter() - c0);
