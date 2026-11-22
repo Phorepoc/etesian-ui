@@ -2863,7 +2863,13 @@ private:
 			gc->DiscardFont();
 			}
 		TBuf<40> ds;
-		TRAP_IGNORE(now.FormatL(ds, _L("%E %*D %N")));
+		{
+		// the date as "Sunday 22 November": the format string with a day number would cut the text after the day name, so it is put together
+		TBuf<16> dn, mn;
+		TRAP_IGNORE(now.FormatL(dn, _L("%E")));
+		TRAP_IGNORE(now.FormatL(mn, _L("%N")));
+		ds.Format(_L("%S %d %S"), &dn, dt.Day() + 1, &mn);
+		}
 		if (iF[1])
 			{
 			gc->UseFont(iF[1]);
