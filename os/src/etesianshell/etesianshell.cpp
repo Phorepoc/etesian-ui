@@ -29,6 +29,10 @@
 const TUid KEtesianShellUid = { 0xE7016B52 };
 const TUid KDevMenuRepo = { 0xE7015A01 };
 const TUint32 KKeyShellId = 10, KKeyShellTries = 11, KKeyShellNote = 12, KKeyOrientation = 13;
+// the additions (guide 01-principles 11): edge gestures are the N9's own, on by default (key 20: absent or 1 = on, 0 = off); "Back by swiping in" is
+// Disabled by default (key 21: 0 off, 1 left, 2 right). pheshellsel does not read them: Etesian Home does, whenever it goes to the background.
+const TUint32 KKeyEdgeGestures = 20, KKeyBackSwipe = 21;
+enum { ERowEtesian = 0, ERowS3, ERowEdge, ERowBack, ERowScreen, ERowRestart, ERowCount };
 // the theme hook (core's pheshelltheme.h, the same code pheshellsel's guard uses): Etesian's own theme is active while the Etesian shell is chosen;
 // the theme that was active before is kept (developer-menu repository keys 15 / 16) and put back when S^3 is chosen again or the guard falls back
 _LIT(KEtesianThemeName, "Etesian");
@@ -75,6 +79,10 @@ static void SwitchThemeL(TBool aToEtesian)
 _LIT(KFiraRegular, "Fira Sans");
 _LIT(KFiraLight, "Fira Sans Light");
 _LIT(KOrAuto, "Automatic");
+_LIT(KOn, "On");
+_LIT(KOff, "Off");
+_LIT(KLeft, "Left");
+_LIT(KRight, "Right");
 _LIT(KOrPortrait, "Portrait");
 _LIT(KOrLandscape, "Landscape");
 _LIT(KIdEtesian, "etesian");
@@ -220,15 +228,10 @@ public:
 		switch (aKey.iCode)
 			{
 			case EKeyUpArrow: if (iSel > 0) iSel--; break;
-			case EKeyDownArrow: if (iSel < 3) iSel++; break;
+			case EKeyDownArrow: if (iSel < ERowCount - 1) iSel++; break;
 			case EKeyEnter:
 			case EKeyDevice3:
-				if (iSel == 3)
-					Restart();
-				else if (iSel == 2)
-					CycleOrientation();
-				else
-					Choose(iSel);
+				Activate(iSel);
 				return EKeyWasConsumed;
 			default:
 				return EKeyWasNotConsumed;
@@ -241,23 +244,55 @@ public:
 		if (aE.iType == TPointerEvent::EButton1Up)
 			{
 			TInt row = RowAt(aE.iPosition);
-			if (row == 3)
-				{
-				iSel = 3;
-				Restart();
-				}
-			else if (row == 2)
-				{
-				iSel = 2;
-				CycleOrientation();
-				}
-			else if (row >= 0)
+			if (row >= 0)
 				{
 				iSel = row;
-				Choose(row);
+				Activate(row);
 				}
 			}
 		}
+	void Activate(TInt aRow)
+		{
+		switch (aRow)
+			{
+			case ERowEtesian:
+			case ERowS3: Choose(aRow); break;
+			case ERowEdge: SetKey(KKeyEdgeGestures, EdgeGestures() ? 0 : 1); break;
+			case ERowBack: SetKey(KKeyBackSwipe, (BackSwipe() + 1) % 3); break;
+			case ERowScreen: CycleOrientation(); break;
+			default: Restart(); break;
+			}
+		DrawNow();
+		}
+	TInt GetKey(TUint32 aKey, TInt aDefault) const
+		{
+		TInt v = aDefault;
+		CRepository* repo = NULL;
+		TRAPD(e, repo = CRepository::NewL(KDevMenuRepo));
+		if (e == KErrNone && repo)
+			{
+			if (repo->Get(aKey, v) != KErrNone)
+				v = aDefault;
+			delete repo;
+			}
+		return v;
+		}
+	void SetKey(TUint32 aKey, TInt aValue)
+		{
+		CRepository* repo = NULL;
+		TRAPD(e, repo = CRepository::NewL(KDevMenuRepo));
+		TInt r = e;
+		if (e == KErrNone && repo)
+			{
+			r = repo->Set(aKey, aValue);
+			if (r == KErrNotFound)
+				r = repo->Create(aKey, aValue);
+			delete repo;
+			}
+		RDebug::Printf("PH: [etesianshell] setting %d = %d: %d", (TInt)aKey, aValue, r);
+		}
+	TBool EdgeGestures() const { return GetKey(KKeyEdgeGestures, 1) != 0; }
+	TInt BackSwipe() const { const TInt v = GetKey(KKeyBackSwipe, 0); return v < 0 || v > 2 ? 0 : v; }
 	// the screen orientation the next start applies (core's pheshellsel): CenRep E7015A01 key 13, 0 Automatic | 1 Portrait | 2 Landscape
 	TInt Orientation() const
 		{
@@ -308,12 +343,12 @@ public:
 	TInt Sc(TInt aDp) const { const TInt u = Rect().Width() < Rect().Height() ? Rect().Width() : Rect().Height(); return (aDp * u + 160) / 320; }
 	TRect RowRect(TInt aRow) const
 		{
-		const TInt top = Sc(60);
-		return TRect(Sc(11), top + aRow * (Sc(44) + Sc(8)), Rect().Width() - Sc(11), top + aRow * (Sc(44) + Sc(8)) + Sc(44));
+		const TInt top = Sc(56), rh = Rect().Width() > Rect().Height() ? Sc(32) : Sc(44), gap = Sc(4);
+		return TRect(Sc(11), top + aRow * (rh + gap), Rect().Width() - Sc(11), top + aRow * (rh + gap) + rh);
 		}
 	TInt RowAt(const TPoint& aP) const
 		{
-		for (TInt i = 0; i < 4; i++)
+		for (TInt i = 0; i < ERowCount; i++)
 			if (RowRect(i).Contains(aP))
 				return i;
 		return -1;
@@ -365,11 +400,11 @@ public:
 		const TRect cr(Sc(11), tr.iBr.iY, w, tr.iBr.iY + small->HeightInPixels() + Sc(4));
 		gc.UseFont(small);
 		gc.DrawText(cur, cr, (cr.Height() + small->AscentInPixels() - small->DescentInPixels()) / 2, CGraphicsContext::ELeft);
-		for (TInt i = 0; i < 4; i++)
+		for (TInt i = 0; i < ERowCount; i++)
 			{
 			const TRect r = RowRect(i);
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
-			const TBool primary = i == 3;
+			const TBool primary = i == ERowRestart;
 			gc.BitBltMasked(r.iTl, primary ? &iBtnAct : &iBtn, TRect(TPoint(0, 0), r.Size()), primary ? &iBtnActMask : &iBtnMask, ETrue);
 			if (i == iSel)
 				{
@@ -381,12 +416,19 @@ public:
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
 			gc.SetPenColor(Rgb(0xFFFFFF));
 			TBuf<48> orient;
-			if (i == 2)
+			if (i == ERowScreen)
 				{
 				const TInt o = Orientation();
 				orient.Format(_L("Screen: %S"), o == 1 ? &KOrPortrait : (o == 2 ? &KOrLandscape : &KOrAuto));
 				}
-			TPtrC nm(i == 0 ? TPtrC(_L("Etesian")) : (i == 1 ? TPtrC(_L("Symbian^3 (stock)")) : (i == 2 ? TPtrC(orient) : TPtrC(_L("Restart now")))));
+			else if (i == ERowEdge)
+				orient.Format(_L("Edge gestures: %S"), EdgeGestures() ? &KOn : &KOff);
+			else if (i == ERowBack)
+				{
+				const TInt b = BackSwipe();
+				orient.Format(_L("Back by swiping in: %S"), b == 1 ? &KLeft : (b == 2 ? &KRight : &KOff));
+				}
+			TPtrC nm(i == ERowEtesian ? TPtrC(_L("Etesian")) : (i == ERowS3 ? TPtrC(_L("Symbian^3 (stock)")) : (i == ERowRestart ? TPtrC(_L("Restart now")) : TPtrC(orient))));
 			const TBool active = i < 2 && iCurrent.CompareF(i == 0 ? TPtrC(KIdEtesian) : TPtrC(KIdS3)) == 0;
 			TBuf<48> line(nm);
 			if (active)
@@ -403,7 +445,7 @@ public:
 			msg.Format(_L("Not saved (error %d)"), iResult);
 		else
 			msg.Copy(_L("Pick a row. Takes effect at the next start."));
-		const TRect mr(Sc(11), RowRect(3).iBr.iY + Sc(6), w, RowRect(3).iBr.iY + Sc(6) + small->HeightInPixels() + Sc(4));
+		const TRect mr(Sc(11), RowRect(ERowRestart).iBr.iY + Sc(2), w, RowRect(ERowRestart).iBr.iY + Sc(2) + small->HeightInPixels() + Sc(4));
 		gc.UseFont(small);
 		gc.DrawText(msg, mr, (mr.Height() + small->AscentInPixels() - small->DescentInPixels()) / 2, CGraphicsContext::ELeft);
 		gc.DiscardFont();

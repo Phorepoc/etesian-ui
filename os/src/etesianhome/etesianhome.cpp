@@ -47,6 +47,7 @@
 #include <bitstd.h>
 #include <gdi.h>
 #include <w32std.h>
+#include <etel3rdparty.h>
 #include "../phedevmenu/pheshellapps.h"
 #include "etesianhome.hrh"
 
@@ -185,17 +186,81 @@ public:
 	void HandleSessionEventL(TMsvSessionEvent, TAny*, TAny*, TAny*) {}
 	};
 
+_LIT(KMenuCharging, "  (charging)");
+_LIT(KMenuNone, "");
 enum TEtPage { EPageEvents = 0, EPageApps = 1, EPageOpen = 2 };
 static const TBool KShowPageDots = EFalse;		// a setting in the guide; off by default
 // the fonts of the Etesian type scale (guide 03)
 enum TEtFont { EFLabel, EFBody, EFTitle, EFSum, EFXs, EFXsB, EFBtn, EFDay, EFDate, EFCount };
 
-class CEtHomeContainer : public CCoeControl
+// the signal strength for the status bar: CTelephony, polled every 15 s; -1 = no data (the PC image has no modem: no bars are drawn)
+class MEtSignalObserver
+	{
+public:
+	virtual void SignalChanged(TInt aBars) = 0;
+	};
+class CEtSignal : public CActive
+	{
+public:
+	static CEtSignal* NewL(MEtSignalObserver& aObs)
+		{
+		CEtSignal* s = new (ELeave) CEtSignal(aObs);
+		CleanupStack::PushL(s);
+		s->iTel = CTelephony::NewL();
+		User::LeaveIfError(s->iTimer.CreateLocal());
+		CActiveScheduler::Add(s);
+		s->Ask();
+		CleanupStack::Pop(s);
+		return s;
+		}
+	~CEtSignal()
+		{
+		Cancel();
+		iTimer.Close();
+		delete iTel;
+		}
+private:
+	CEtSignal(MEtSignalObserver& aObs) : CActive(EPriorityLow), iObs(aObs), iPkg(iSig) {}
+	void Ask()
+		{
+		iWaiting = EFalse;
+		iTel->GetSignalStrength(iStatus, iPkg);
+		SetActive();
+		}
+	void RunL()
+		{
+		if (iWaiting)
+			{
+			Ask();
+			return;
+			}
+		iObs.SignalChanged(iStatus.Int() == KErrNone ? (TInt)iSig.iBar : -1);
+		iWaiting = ETrue;
+		iTimer.After(iStatus, 15000000);
+		SetActive();
+		}
+	void DoCancel()
+		{
+		if (iWaiting)
+			iTimer.Cancel();
+		else
+			iTel->CancelAsync(CTelephony::EGetSignalStrengthCancel);
+		}
+	MEtSignalObserver& iObs;
+	CTelephony* iTel = NULL;
+	CTelephony::TSignalStrengthV1 iSig;
+	CTelephony::TSignalStrengthV1Pckg iPkg;
+	RTimer iTimer;
+	TBool iWaiting = EFalse;
+	};
+
+class CEtHomeContainer : public CCoeControl, public MEtSignalObserver
 	{
 public:
 	CEtHomeContainer() { for (TInt i = 0; i < EFCount; i++) iF[i] = NULL; }
 	~CEtHomeContainer()
 		{
+		delete iSignal;
 		delete iClock;
 		delete iMenuTimer;
 		delete iCloseTimer;
@@ -217,6 +282,8 @@ public:
 		LoadAppsL();
 		iClock = CPeriodic::NewL(CActive::EPriorityLow);
 		iClock->Start(15000000, 15000000, TCallBack(ClockTick, this));
+		TRAP_IGNORE(iSignal = CEtSignal::NewL(*this));
+		ReadBattery();
 		iMenuTimer = CPeriodic::NewL(CActive::EPriorityHigh);
 		iCloseTimer = CPeriodic::NewL(CActive::EPriorityLow);
 		iHoldTimer = CPeriodic::NewL(CActive::EPriorityStandard);
@@ -383,6 +450,7 @@ public:
 			CleanupStack::Pop(a);
 			}
 		iApps.Sort(TLinearOrder<CEtApp>(CompareApps));
+		ApplyOrder();
 		RDebug::Printf("PH: [etesianhome] %d apps (list r=%d, %d tagged, %d hidden by the tags)", iApps.Count(), r, managed.Count(), hide.Count());
 		CleanupStack::PopAndDestroy(2, &managed);
 		}
@@ -418,6 +486,67 @@ public:
 		const TRect c = CellRect(aIndex);
 		return TRect(TPoint(c.iBr.iX - iXSize * 3 / 4, c.iTl.iY - iXSize / 4), TSize(iXSize, iXSize));
 		}
+	// ---- the Applications grid's own order (long press = edit mode, drag to move): one hex UID per line in the private directory
+	void ApplyOrder()
+		{
+		RFs fs;
+		if (fs.Connect() != KErrNone)
+			return;
+		fs.SetSessionToPrivate(EDriveC);
+		RFile f;
+		if (f.Open(fs, _L("order.txt"), EFileRead) == KErrNone)
+			{
+			TInt sz = 0;
+			f.Size(sz);
+			HBufC8* b = HBufC8::New(sz + 1);
+			if (b)
+				{
+				TPtr8 bp(b->Des());
+				f.Read(bp);
+				TInt target = 0;
+				TLex8 lex(bp);
+				while (!lex.Eos())
+					{
+					lex.SkipSpace();
+					TUint32 u = 0;
+					if (lex.Val(u, EHex) != KErrNone)
+						break;
+					for (TInt i = target; i < iApps.Count(); i++)
+						if ((TUint32)iApps[i]->iUid.iUid == u)
+							{
+							CEtApp* a = iApps[i];
+							iApps.Remove(i);
+							iApps.Insert(a, target++);
+							break;
+							}
+					}
+				delete b;
+				}
+			f.Close();
+			}
+		fs.Close();
+		}
+	void SaveOrder()
+		{
+		RFs fs;
+		if (fs.Connect() != KErrNone)
+			return;
+		fs.CreatePrivatePath(EDriveC);
+		fs.SetSessionToPrivate(EDriveC);
+		RFile f;
+		if (f.Replace(fs, _L("order.txt"), EFileWrite) == KErrNone)
+			{
+			for (TInt i = 0; i < iApps.Count(); i++)
+				{
+				TBuf8<16> l;
+				l.Format(_L8("%08x\n"), iApps[i]->iUid.iUid);
+				f.Write(l);
+				}
+			f.Close();
+			}
+		fs.Close();
+		RDebug::Printf("PH: [etesianhome] apps order saved (%d)", iApps.Count());
+		}
 	TRect DoneRect() const { return TRect(TPoint(iW / 2 - iBtnW - Sc(6), iH - iBottomH + (iBottomH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
 	TRect CloseAllRect() const { return TRect(TPoint(iW / 2 + Sc(6), iH - iBottomH + (iBottomH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
 	TInt HitTest(const TPoint& aP) const
@@ -449,6 +578,8 @@ public:
 		if (aPage > EPageOpen) aPage = EPageEvents;
 		iPage = aPage;
 		iEdit = EFalse;
+		iEditApps = EFalse;
+		iDragApp = -1;
 		iScroll = 0;
 		iSel = -1;
 		if (iPage == EPageOpen)
@@ -519,6 +650,36 @@ public:
 		CleanupStack::Pop(dst);
 		return dst;
 		}
+	// ---- the app row of the bottom swipe and hold (guide 23): one icon per grid column (4), the tile size + 36 dp high, along the bottom
+	TRect RowStrip(const TSize& aScreen) const
+		{
+		const TInt h = iTile + Sc(36);
+		return TRect(0, aScreen.iHeight - h, aScreen.iWidth, aScreen.iHeight);
+		}
+	TRect RowCell(const TRect& aStrip, TInt aI) const
+		{
+		const TInt cw = aStrip.Width() / 4;
+		return TRect(aStrip.iTl.iX + aI * cw + (cw - iTile) / 2, aStrip.iTl.iY + Sc(18), aStrip.iTl.iX + aI * cw + (cw - iTile) / 2 + iTile, aStrip.iTl.iY + Sc(18) + iTile);
+		}
+	void DrawRow(CWindowGc& aGc, const TRect& aStrip) const
+		{
+		aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+		aGc.SetPenStyle(CGraphicsContext::ENullPen);
+		for (TInt i = 0; i < 4 && i < iApps.Count(); i++)
+			{
+			const TRect c = RowCell(aStrip, i);
+			aGc.BitBltMasked(c.iTl, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
+			DrawIcon(aGc, *iApps[i], c, 62);
+			}
+		}
+	TInt RowHit(const TRect& aStrip, const TPoint& aP) const
+		{
+		for (TInt i = 0; i < 4 && i < iApps.Count(); i++)
+			if (RowCell(aStrip, i).Contains(aP))
+				return i;
+		return -1;
+		}
+	void LaunchRow(TInt aIndex) { Launch(aIndex); }
 	void CaptureForeground()
 		{
 		RWsSession& ws = CEikonEnv::Static()->WsSession();
@@ -822,6 +983,75 @@ public:
 			gc.DrawLine(pts[i], pts[i + 1]);
 		gc.SetPenStyle(CGraphicsContext::ENullPen);
 		}
+	// the battery (a rounded body, 7 levels) and the signal bars, right to left from aRight
+	void DrawIndicators(CWindowGc& gc, TInt aRight) const
+		{
+		const TInt bh = Sc(9), bw = Sc(18), cy = iStatusH / 2;
+		gc.SetPenStyle(CGraphicsContext::ENullPen);
+		gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+		if (iBatt >= 0)
+			{
+			const TRect body(aRight - bw, cy - bh / 2, aRight, cy + bh / 2);
+			gc.SetBrushColor(Rgb(0x505050));
+			gc.DrawRoundRect(body, TSize(Sc(2), Sc(2)));
+			gc.SetBrushColor(Rgb(iBatt <= 1 && !iCharging ? 0xDA201E : (iCharging ? 0x62B700 : KColFg)));
+			const TInt fill = (bw - Sc(4)) * (iBatt + 1) / 8;
+			gc.DrawRect(TRect(body.iTl.iX + Sc(2), body.iTl.iY + Sc(2), body.iTl.iX + Sc(2) + fill, body.iBr.iY - Sc(2)));
+			gc.SetBrushColor(Rgb(0x505050));
+			gc.DrawRect(TRect(body.iBr.iX, cy - Sc(2), body.iBr.iX + Sc(2), cy + Sc(2)));
+			aRight -= bw + Sc(10);
+			}
+		if (iBars >= 0)
+			{
+			const TInt lit = iBars > 7 ? 5 : (iBars * 5 + 6) / 7;
+			const TInt step = Sc(4), w = Sc(3);
+			for (TInt i = 0; i < 5; i++)
+				{
+				const TInt h = Sc(3) + i * Sc(2);
+				const TInt x = aRight - (5 - i) * step;
+				gc.SetBrushColor(i < lit ? Rgb(KColFg) : Rgb(0x505050));
+				gc.DrawRect(TRect(x, cy + Sc(5) - h, x + w, cy + Sc(5)));
+				}
+			}
+		}
+	// the status menu (a tap on the status bar, guide 20-phone): the battery, the Control Panel and the Etesian shell settings
+	TInt MenuRows() const { return 3; }
+	TRect MenuRow(TInt aI) const { return TRect(0, iStatusH + aI * Sc(44), iW, iStatusH + (aI + 1) * Sc(44)); }
+	void DrawStatusMenu(CWindowGc& gc) const
+		{
+		gc.SetPenStyle(CGraphicsContext::ENullPen);
+		gc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+		gc.SetBrushColor(Rgb(0x141414));
+		gc.DrawRect(TRect(0, iStatusH, iW, iStatusH + MenuRows() * Sc(44)));
+		gc.UseFont(iF[EFBody]);
+		gc.SetPenStyle(CGraphicsContext::ESolidPen);
+		gc.SetPenColor(Rgb(KColFg));
+		for (TInt i = 0; i < MenuRows(); i++)
+			{
+			TBuf<40> t;
+			if (i == 0)
+				{
+				if (iBatt >= 0)
+					t.Format(_L("Battery %d%%%S"), (iBatt + 1) * 100 / 8, iCharging ? &KMenuCharging : &KMenuNone);
+				else
+					t.Copy(_L("Battery"));
+				}
+			else
+				t.Copy(i == 1 ? _L("Settings") : _L("Etesian shell"));
+			const TRect r = MenuRow(i);
+			gc.DrawText(t, TRect(r.iTl.iX + iMargin, r.iTl.iY, r.iBr.iX - iMargin, r.iBr.iY), Baseline(iF[EFBody], r), CGraphicsContext::ELeft);
+			}
+		gc.DiscardFont();
+		}
+	void LaunchUid(TUint32 aUid)
+		{
+		for (TInt i = 0; i < iApps.Count(); i++)
+			if (iApps[i]->iUid.iUid == (TInt)aUid)
+				{
+				Launch(i);
+				return;
+				}
+		}
 	void DrawApps(CWindowGc& gc) const
 		{
 		gc.UseFont(iF[EFLabel]);
@@ -834,7 +1064,11 @@ public:
 			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
 			gc.BitBltMasked(tp, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
 			const CEtApp* a = iApps[i];
+			if (iEditApps && i == iDragApp)
+				continue;		// drawn under the finger below
 			DrawIcon(gc, *a, TRect(tp, TSize(iTile, iTile)), 62);
+			if (iEditApps)
+				DrawSquircleRing(gc, TRect(tp.iX - 2, tp.iY - 2, tp.iX + iTile + 2, tp.iY + iTile + 2));
 			if (i == iSel)
 				DrawSquircleRing(gc, TRect(tp.iX - 3, tp.iY - 3, tp.iX + iTile + 3, tp.iY + iTile + 3));
 			gc.SetPenStyle(CGraphicsContext::ESolidPen);
@@ -846,6 +1080,14 @@ public:
 			gc.SetPenStyle(CGraphicsContext::ENullPen);
 			}
 		gc.DiscardFont();
+		if (iEditApps && iDragApp >= 0 && iDragApp < iApps.Count())
+			{
+			const TRect box(iDragPos.iX - iTile / 2, iDragPos.iY - iTile / 2, iDragPos.iX + iTile / 2, iDragPos.iY + iTile / 2);
+			gc.SetBrushStyle(CGraphicsContext::ENullBrush);
+			gc.BitBltMasked(box.iTl, &iTileBmp, TRect(TPoint(0, 0), TSize(iTile, iTile)), &iMaskBmp, ETrue);
+			DrawIcon(gc, *iApps[iDragApp], box, 62);
+			DrawSquircleRing(gc, box);
+			}
 		}
 	// the app's icon centred in aBox, taking aPercent of its width
 	void DrawIcon(CWindowGc& gc, const CEtApp& aApp, const TRect& aBox, TInt aPercent) const
@@ -1047,7 +1289,16 @@ public:
 		TRAP_IGNORE(now.FormatL(ts, _L("%J%:1%T%+B")));
 		gc.SetPenColor(Rgb(KColFg));
 		gc.DrawText(ts, TRect(iW / 2, 0, iW - iMargin, iStatusH), sb, CGraphicsContext::ERight);
+		const TInt tw = f->TextWidthInPixels(ts);
 		gc.DiscardFont();
+		DrawIndicators(gc, iW - iMargin - tw - Sc(10));
+		if (iStatusMenu)
+			DrawStatusMenu(gc);
+		if (iEditApps)
+			{
+			DrawLitButton(gc, DoneRect(), _L("Done"));
+			return;
+			}
 		if (iEdit && iPage == EPageOpen)
 			{
 			// edit mode: the lit Done and Close all buttons take the place of the dots
@@ -1148,6 +1399,15 @@ public:
 			self->iHeld = ETrue;		// the finger lifting is not a tap
 			self->DrawNow();
 			}
+		else if (self->iPage == EPageApps && !self->iEditApps && !self->iDragging && !self->iSwiping && self->iDownHit >= 0)
+			{
+			self->iEditApps = ETrue;		// the guide: a long press on the grid starts edit mode; the icon under the finger can be dragged
+			self->iDragApp = self->iDownHit;
+			self->iDragPos = self->iDownPos;
+			self->iHeld = ETrue;
+			RDebug::Printf("PH: [etesianhome] apps edit mode");
+			self->DrawNow();
+			}
 		return 0;
 		}
 	void HandlePointerEventL(const TPointerEvent& aE)
@@ -1161,7 +1421,7 @@ public:
 				iSwiping = EFalse;
 				iHeld = EFalse;
 				iDownHit = iPage == EPageEvents ? -1 : HitTest(aE.iPosition);
-				if (iPage == EPageOpen && !iEdit)
+				if ((iPage == EPageOpen && !iEdit) || (iPage == EPageApps && !iEditApps))
 					{
 					iHoldTimer->Cancel();
 					iHoldTimer->Start(700000, 700000, TCallBack(HoldTick, this));		// a long press = edit mode
@@ -1169,6 +1429,12 @@ public:
 				break;
 			case TPointerEvent::EDrag:
 				{
+				if (iEditApps && iDragApp >= 0)
+					{
+					iDragPos = aE.iPosition;
+					DrawNow();
+					break;
+					}
 				const TInt dy = aE.iPosition.iY - iDownPos.iY;
 				const TInt dx = aE.iPosition.iX - iDownPos.iX;
 				if (!iDragging && !iSwiping && (dx > Sc(12) || dx < -Sc(12)) && (dx > 0 ? dx : -dx) > (dy > 0 ? dy : -dy))
@@ -1194,6 +1460,21 @@ public:
 			case TPointerEvent::EButton1Up:
 				{
 				iHoldTimer->Cancel();
+				if (iEditApps && iDragApp >= 0)
+					{
+					const TInt tgt = HitTest(aE.iPosition);
+					if (tgt >= 0 && tgt != iDragApp)
+						{
+						CEtApp* a = iApps[iDragApp];
+						iApps.Remove(iDragApp);
+						iApps.Insert(a, tgt);
+						SaveOrder();
+						}
+					iDragApp = -1;
+					iDragging = iSwiping = iHeld = EFalse;
+					DrawNow();
+					break;
+					}
 				const TInt dx = aE.iPosition.iX - iDownPos.iX;
 				if (iSwiping && (dx > Sc(48) || dx < -Sc(48)))
 					SetPage(dx < 0 ? iPage + 1 : iPage - 1);
@@ -1208,6 +1489,30 @@ public:
 		}
 	void HandleTap(const TPoint& aP)
 		{
+		if (aP.iY < iStatusH)
+			{
+			iStatusMenu = !iStatusMenu;
+			DrawNow();
+			return;
+			}
+		if (iEditApps)
+			{
+			if (DoneRect().Contains(aP))
+				{
+				iEditApps = EFalse;
+				DrawNow();
+				}
+			return;		// in edit mode an icon does not launch
+			}
+		if (iStatusMenu)
+			{
+			iStatusMenu = EFalse;
+			for (TInt i = 1; i < MenuRows(); i++)
+				if (MenuRow(i).Contains(aP))
+					LaunchUid(i == 1 ? 0x100058ecu : 0xE7016B52u);
+			DrawNow();
+			return;
+			}
 		if (iEdit && iPage == EPageOpen)
 			{
 			if (DoneRect().Contains(aP)) { iEdit = EFalse; DrawNow(); return; }
@@ -1242,6 +1547,7 @@ public:
 	static TInt ClockTick(TAny* aThis)
 		{
 		CEtHomeContainer* self = static_cast<CEtHomeContainer*>(aThis);
+		self->ReadBattery();
 		// the system state is logged when it changes (the shell selector confirms a good start by the Normal state)
 		TInt st = -1;
 		if (RProperty::Get(TUid::Uid(0x101F8766), 0x41, st) != KErrNone)
@@ -1257,6 +1563,17 @@ public:
 			self->RefreshEvents();
 		self->DrawNow();
 		return 0;
+		}
+	void SignalChanged(TInt aBars) { if (aBars != iBars) { iBars = aBars; DrawNow(); } }
+	void ReadBattery()
+		{
+		const TUid KPowerState = { 0x10205041 };		// KPSUidHWRMPowerState: key 1 battery level 0..7, key 3 charging status
+		TInt v = -1, c = 0;
+		if (RProperty::Get(KPowerState, 1, v) != KErrNone)
+			v = -1;
+		RProperty::Get(KPowerState, 3, c);
+		iBatt = v;
+		iCharging = (c == 1);
 		}
 	void SizeChangedL(const TRect& aRect) { (void)aRect; }
 	// the active theme changed (the Themes application, or the Etesian shell app): the icons are fetched again from the skin
@@ -1300,6 +1617,11 @@ private:
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
 	TPoint iDownPos;
 	TBool iDragging = EFalse, iSwiping = EFalse, iMenuLong = EFalse, iEdit = EFalse, iHeld = EFalse;
+	TInt iBatt = -1, iBars = -1;		// battery level 0..7 (HWRM power state), signal bars (CTelephony); -1 = unknown
+	TBool iCharging = EFalse, iStatusMenu = EFalse, iEditApps = EFalse;
+	TInt iDragApp = -1;
+	TPoint iDragPos;
+	CEtSignal* iSignal = NULL;
 	};
 
 // ---- edge gestures (guide 20-phone.md section 1 and 23-phone-behaviour.md "Edge swipes over an app") ----
@@ -1314,7 +1636,10 @@ class MEtEdgeActions
 	{
 public:
 	virtual void EdgeMinimise() = 0;		// left, right, bottom: Home to the front, Open apps
-	virtual void EdgePeek() = 0;			// bottom and hold: the Open apps
+	virtual TRect EdgeRowStrip(const TSize& aScreen) = 0;			// bottom and hold: the first row of the grid comes up
+	virtual void EdgeDrawRow(CWindowGc& aGc, const TRect& aStrip) = 0;
+	virtual TInt EdgeRowHit(const TRect& aStrip, const TPoint& aP) = 0;
+	virtual void EdgeRowLaunch(TInt aIndex) = 0;
 	virtual void EdgeClosed() = 0;			// the front application was asked to close: Home to the front, Open apps
 	};
 
@@ -1337,6 +1662,7 @@ public:
 		iPoints.Close();
 		for (TInt i = 0; i < ECount; i++)
 			iWin[i].Close();
+		iShade.Close();
 		iGroup.Close();
 		delete iDev;
 		iWs.Close();
@@ -1345,6 +1671,8 @@ public:
 	void SetEnabled(TBool aOn)
 		{
 		iEnabled = aOn;
+		if (!aOn)
+			HideShade();
 		Apply();
 		}
 	void Relayout()
@@ -1369,6 +1697,16 @@ private:
 		gn->SetSystem(ETrue);
 		gn->SetWindowGroupName(iGroup);
 		CleanupStack::PopAndDestroy(gn);
+		// the shade: black over what is behind (a closing app darkens, the app row's backdrop); hidden unless needed, below the strips
+		iShade = RWindow(iWs);
+		User::LeaveIfError(iShade.Construct(iGroup, ECount + 1));
+		iShade.SetRequiredDisplayMode(EColor16MA);
+		iShade.SetTransparencyAlphaChannel();
+		iShade.SetBackgroundColor(TRgb(0, 0, 0, 0));
+		iShade.SetPointerGrab(ETrue);
+		iShade.PointerFilter(EPointerFilterDrag | EPointerFilterMove | EPointerFilterEnterExit, 0);
+		iShade.Activate();
+		iShade.SetVisible(EFalse);
 		for (TInt i = 0; i < ECount; i++)
 			{
 			iWin[i] = RWindow(iWs);
@@ -1420,10 +1758,28 @@ private:
 		iWin[ETopBand].SetExtent(TPoint(iZone, top), TSize(s.iWidth - 2 * iZone, band));
 		RDebug::Printf("PH: [etesianedges] screen %dx%d zone %d slop %d top %d px", s.iWidth, s.iHeight, iZone, iSlop, top);
 		}
+	// the settings of the Etesian shell app (CenRep E7015A01): key 20 edge gestures (absent = on), key 21 Back by swiping in (0 off, 1 left, 2 right)
+	void ReadConfig()
+		{
+		iCfgOn = ETrue;
+		iCfgBack = 0;
+		CRepository* r = NULL;
+		TRAPD(e, r = CRepository::NewL(TUid::Uid(0xE7015A01)));
+		if (e == KErrNone && r)
+			{
+			TInt v = 1;
+			if (r->Get(20, v) == KErrNone)
+				iCfgOn = v != 0;
+			if (r->Get(21, v) == KErrNone && v >= 0 && v <= 2)
+				iCfgBack = v;
+			delete r;
+			}
+		}
 	void Apply()
 		{
+		ReadConfig();
 		for (TInt i = 0; i < ECount; i++)
-			iWin[i].SetVisible(iEnabled && !iPassing);
+			iWin[i].SetVisible(iEnabled && iCfgOn && !iPassing && !iRowShown);
 		iWs.Flush();
 		}
 	void RunL()
@@ -1452,6 +1808,11 @@ private:
 	void Pointer(TInt aEdge, const TPointerEvent& aPe)
 		{
 		const TPoint p = aPe.iParentPosition;
+		if (aEdge == ECount)
+			{
+			ShadePointer(aPe);
+			return;
+			}
 		switch (aPe.iType)
 			{
 			case TPointerEvent::EButton1Down:
@@ -1465,6 +1826,9 @@ private:
 				iDownTime.UniversalTime();
 				iPoints.Reset();
 				iPoints.Append(p);
+				iLastIn = 0;
+				iLastMs = 0;
+				iV = 0;
 				iTracking = ETrue;
 				break;
 			case TPointerEvent::EDrag:
@@ -1472,6 +1836,17 @@ private:
 					return;
 				if (iPoints.Count() < 200)
 					iPoints.Append(p);
+				{
+				const TInt inNow = Inward(p), ms = ElapsedMs();
+				if (ms - iLastMs >= 30)
+					{
+					iV = (inNow - iLastIn) * 1000 / (ms - iLastMs);		// px/s, inward
+					iLastIn = inNow;
+					iLastMs = ms;
+					}
+				if (iGesture && iEdge == ETop && !iDone)
+					Darken(inNow);
+				}
 				if (!iGesture && !iDone)
 					{
 					const TInt in = Inward(p), ac = Across(p);
@@ -1497,6 +1872,19 @@ private:
 				if (!iTracking)
 					return;
 				iTimer->Cancel();
+				if (iRowShown)
+					{
+					// let go on an icon: it opens; anywhere else the app rests on the row until a tap
+					const TInt h = iAct.EdgeRowHit(iAct.EdgeRowStrip(iScreen), p);
+					if (h >= 0)
+						{
+						HideShade();
+						iAct.EdgeRowLaunch(h);
+						}
+					iTracking = EFalse;
+					iGesture = EFalse;
+					return;
+					}
 				if (iGesture && !iDone)
 					Finish(p);
 				else if (!iDone)
@@ -1520,26 +1908,39 @@ private:
 		if (s->iTracking && s->iGesture && !s->iDone)
 			{
 			s->iDone = ETrue;
-			RDebug::Printf("PH: [etesianedges] bottom swipe + hold: Open apps");
-			s->iAct.EdgePeek();
+			RDebug::Printf("PH: [etesianedges] bottom swipe + hold: the app row");
+			s->ShowRow();
 			}
 		return 0;
 		}
-	// letting go: commit past half the screen (N9), or on a quick flick (900 dp/s = 143 mm/s) inward once past 8%
+	// letting go: commit past half the screen (N9), or on a quick flick (900 dp/s = 143 mm/s) inward once past 8%; moving back towards the edge
+	// faster than 300 dp/s (47.7 mm/s) always cancels. A side set as Back (setting) fires Back past 40 dp (6.4 mm) instead of minimising.
 	void Finish(const TPoint& aP)
 		{
 		iDone = ETrue;
 		const TInt in = Inward(aP);
 		const TInt span = (iEdge == EBottom || iEdge == ETop) ? iScreen.iHeight : iScreen.iWidth;
-		TTime now;
-		now.UniversalTime();
-		TInt dt = (TInt)(now.MicroSecondsFrom(iDownTime).Int64() / 1000);
-		if (dt < 1)
-			dt = 1;
-		const TInt perSec = in * 1000 / dt;
-		const TInt flick = Mm(10) * 143;
-		const TBool commit = (perSec > flick) ? in * 100 > span * 8 : in * 100 > span * 50;
-		RDebug::Printf("PH: [etesianedges] edge %d inward %d of %d, %d px/s: %s", iEdge, in, span, perSec, commit ? "commit" : "spring back");
+		const TInt ms = ElapsedMs() < 1 ? 1 : ElapsedMs();
+		const TInt perSec = in * 1000 / ms;
+		const TInt pxPerMm = Mm(10);
+		HideShade();
+		if (iV < -pxPerMm * 48)
+			{
+			RDebug::Printf("PH: [etesianedges] edge %d: moving back, cancelled", iEdge);
+			return;
+			}
+		if ((iEdge == ELeft && iCfgBack == 1) || (iEdge == ERight && iCfgBack == 2))
+			{
+			if (in >= pxPerMm * 64 / 10)
+				{
+				RDebug::Printf("PH: [etesianedges] edge %d: Back", iEdge);
+				SendBack();
+				}
+			return;
+			}
+		const TBool fast = perSec > pxPerMm * 143 || iV > pxPerMm * 143;
+		const TBool commit = fast ? in * 100 > span * 8 : in * 100 > span * 50;
+		RDebug::Printf("PH: [etesianedges] edge %d inward %d of %d: %s", iEdge, in, span, commit ? "commit" : "spring back");
 		if (!commit)
 			return;
 		if (iEdge == ETop)
@@ -1565,6 +1966,86 @@ private:
 		t.EndTask();
 		RDebug::Printf("PH: [etesianedges] top swipe: closing window group %d", fg);
 		iAct.EdgeClosed();
+		}
+	TInt ElapsedMs() const
+		{
+		TTime now;
+		now.UniversalTime();
+		return (TInt)(now.MicroSecondsFrom(iDownTime).Int64() / 1000);
+		}
+	void SendBack()
+		{
+		TRawEvent ev;
+		ev.Set(TRawEvent::EKeyDown, EStdKeyDevice1);			// the right soft key = Back
+		iWs.SimulateRawEvent(ev);
+		ev.Set(TRawEvent::EKeyUp, EStdKeyDevice1);
+		iWs.SimulateRawEvent(ev);
+		iWs.Flush();
+		}
+	// the shade: black at aAlpha (0..255) over everything; aRow also draws the first row of the grid on top (the hold)
+	void DrawShade(TInt aAlpha, TBool aRow)
+		{
+		CWindowGc* gc = NULL;
+		if (iDev->CreateContext(gc) != KErrNone || !gc)
+			return;
+		gc->Activate(iShade);
+		iShade.SetExtent(TPoint(0, 0), iScreen);
+		iShade.Invalidate();
+		iShade.BeginRedraw();
+		gc->SetDrawMode(CGraphicsContext::EDrawModeWriteAlpha);
+		gc->SetPenStyle(CGraphicsContext::ENullPen);
+		gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+		gc->SetBrushColor(TRgb(0, 0, 0, aAlpha));
+		gc->DrawRect(TRect(TPoint(0, 0), iScreen));
+		gc->SetDrawMode(CGraphicsContext::EDrawModePEN);
+		if (aRow)
+			iAct.EdgeDrawRow(*gc, iAct.EdgeRowStrip(iScreen));
+		iShade.EndRedraw();
+		gc->Deactivate();
+		delete gc;
+		iWs.Flush();
+		}
+	// a closing app darkens the further it is pulled down: 0.7 black at the bottom of the screen
+	void Darken(TInt aInward)
+		{
+		const TInt a = aInward < 0 ? 0 : (aInward > iScreen.iHeight ? iScreen.iHeight : aInward) * 179 / iScreen.iHeight;
+		if (a / 8 == iShadeAlpha / 8 && iShadeOn)
+			return;
+		iShadeAlpha = a;
+		iShadeOn = ETrue;
+		iShade.SetVisible(ETrue);
+		DrawShade(a, EFalse);
+		}
+	void ShowRow()
+		{
+		iRowShown = ETrue;
+		iShadeOn = ETrue;
+		iShadeAlpha = 140;
+		iShade.SetVisible(ETrue);
+		DrawShade(140, ETrue);			// the app falls into shadow: 55 % black
+		Apply();
+		}
+	void HideShade()
+		{
+		if (iShadeOn || iRowShown)
+			{
+			iShade.SetVisible(EFalse);
+			iWs.Flush();
+			}
+		iShadeOn = EFalse;
+		iRowShown = EFalse;
+		iShadeAlpha = -100;
+		}
+	// the shade is itself pointer-reactive only while the row rests (the finger that held it is on the bottom strip)
+	void ShadePointer(const TPointerEvent& aPe)
+		{
+		if (!iRowShown || aPe.iType != TPointerEvent::EButton1Up)
+			return;
+		const TInt h = iAct.EdgeRowHit(iAct.EdgeRowStrip(iScreen), aPe.iParentPosition);
+		HideShade();
+		Apply();
+		if (h >= 0)
+			iAct.EdgeRowLaunch(h);
 		}
 	// raw events are in the digitiser's (portrait) coordinates: a landscape screen mode is the portrait one turned (as the compositor's FilterPointer reads them)
 	TPoint Digitiser(const TPoint& aP) const
@@ -1603,7 +2084,6 @@ private:
 			iUpPending = ETrue;
 			}
 		iWs.Flush();
-		RDebug::Printf("PH: [etesianedges] edge %d: %s, handed to the application (%d points)", iEdge, aMoved ? "along the edge" : "tap", iPoints.Count());
 		iTimer->Cancel();
 		iTimer->Start(iUpPending ? 100000 : 400000, 400000, TCallBack(BackTick, this));
 		}
@@ -1638,6 +2118,9 @@ private:
 	TInt iZone = 20, iSlop = 8, iEdge = 0;
 	TPoint iStart, iAnchor, iUpAt;
 	TBool iUpPending = EFalse;
+	RWindow iShade;
+	TBool iShadeOn = EFalse, iRowShown = EFalse, iCfgOn = ETrue;
+	TInt iShadeAlpha = -100, iCfgBack = 0, iLastIn = 0, iLastMs = 0, iV = 0;
 	TTime iDownTime;
 	TBool iEnabled = EFalse, iPassing = EFalse, iTracking = EFalse, iGesture = EFalse, iDone = EFalse;
 	};
@@ -1692,10 +2175,14 @@ public:
 		RDebug::Printf("PH: [etesianhome] edge swipe: minimise to Home");
 		ToHome(ETrue);
 		}
-	void EdgePeek()
+	TRect EdgeRowStrip(const TSize& aScreen) { return iView ? iView->RowStrip(aScreen) : TRect(); }
+	void EdgeDrawRow(CWindowGc& aGc, const TRect& aStrip) { if (iView) iView->DrawRow(aGc, aStrip); }
+	TInt EdgeRowHit(const TRect& aStrip, const TPoint& aP) { return iView ? iView->RowHit(aStrip, aP) : -1; }
+	void EdgeRowLaunch(TInt aIndex)
 		{
-		RDebug::Printf("PH: [etesianhome] edge swipe: Open apps peek");
-		ToHome(ETrue);
+		RDebug::Printf("PH: [etesianhome] app row: launch %d", aIndex);
+		if (iView)
+			iView->LaunchRow(aIndex);
 		}
 	void EdgeClosed()
 		{
