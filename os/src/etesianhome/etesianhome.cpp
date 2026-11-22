@@ -275,6 +275,7 @@ public:
 		delete iWatch;
 		delete iPreviewTimer;
 		delete iAnimTimer;
+		delete iIdle;
 		FreeStrip();
 		delete iMenuTimer;
 		delete iCloseTimer;
@@ -297,6 +298,7 @@ public:
 		iWatch = CPeriodic::NewL(CActive::EPriorityLow);
 		iPreviewTimer = CPeriodic::NewL(CActive::EPriorityLow);
 		iAnimTimer = CPeriodic::NewL(CActive::EPriorityHigh);
+		iIdle = CIdle::NewL(CActive::EPriorityIdle);
 		TRAP_IGNORE(Window().EnableAdvancedPointers());
 		iClock = CPeriodic::NewL(CActive::EPriorityLow);
 		iClock->Start(15000000, 15000000, TCallBack(ClockTick, this));
@@ -733,9 +735,39 @@ public:
 			{
 			delete iPg[i];
 			iPg[i] = NULL;
+			iPgOk[i] = EFalse;
 			}
 		iStripOn = EFalse;
 		iStripX = 0;
+		}
+	// the strip's pictures are kept between drags: a normal redraw (the content may have changed) makes them stale, and an idle step redraws them one page at a
+	// time, so a drag finds them ready (building all three at the start of a drag took about a second)
+	void EndStrip()
+		{
+		iStripOn = EFalse;
+		iStripX = 0;
+		}
+	void NotePageDrawn() const
+		{
+		CEtHomeContainer* self = const_cast<CEtHomeContainer*>(this);
+		for (TInt i = 0; i < 3; i++)
+			self->iPgOk[i] = EFalse;
+		if (self->iIdle && !self->iIdle->IsActive())
+			self->iIdle->Start(TCallBack(IdleBuild, self));
+		}
+	static TInt IdleBuild(TAny* aThis)
+		{
+		CEtHomeContainer* self = static_cast<CEtHomeContainer*>(aThis);
+		if (self->iStripOn || self->iAnimTimer->IsActive())
+			return EFalse;
+		const TInt order[3] = { self->iPage, (self->iPage + 1) % 3, (self->iPage + 2) % 3 };
+		for (TInt k = 0; k < 3; k++)
+			if (!self->iPgOk[order[k]])
+				{
+				self->BuildPage(order[k]);
+				return ETrue;
+				}
+		return EFalse;
 		}
 	// one page as a picture of the whole window: the background, then the page as Draw() would draw it (the status bar and the bottom band are
 	// drawn over the strip by Draw(), they do not move)
@@ -780,21 +812,23 @@ public:
 			}
 		delete gc;
 		delete dev;
+		delete iPg[aPage];
 		iPg[aPage] = bm;
+		iPgOk[aPage] = ETrue;
 		}
 	void BeginStrip()
 		{
 		if (iStripOn)
 			return;
-		FreeStrip();
 		const TInt t0 = User::NTickCount();
 		for (TInt i = 0; i < 3; i++)
-			BuildPage(i);
+			if (!iPgOk[i])
+				BuildPage(i);
 		iStripOn = ETrue;
 		iStripX = 0;
 		iFrames = 0;
 		iFrameTicks = 0;
-		RDebug::Printf("PH: [etesianhome] strip: three pages drawn in %d ms", (TInt)(User::NTickCount() - t0));
+		RDebug::Printf("PH: [etesianhome] strip: pages ready in %d ms", (TInt)(User::NTickCount() - t0));
 		}
 	void DrawStripPages(CWindowGc& gc) const
 		{
@@ -908,7 +942,7 @@ public:
 		LogFrames("settle");
 		const TInt page = iAnimPage;
 		iAnimPage = -1;
-		FreeStrip();
+		EndStrip();
 		if (page >= 0)
 			SetPage(page);			// wraps; draws the page for real
 		else
@@ -921,7 +955,7 @@ public:
 			iAnimTimer->Cancel();
 			const TInt page = iAnimPage;
 			iAnimPage = -1;
-			FreeStrip();
+			EndStrip();
 			if (page >= 0)
 				SetPage(page);
 			}
@@ -1688,6 +1722,7 @@ public:
 			DrawStripPages(gc);
 		else
 			{
+			NotePageDrawn();
 			gc.SetClippingRect(TRect(0, iStatusH, iW, iH - iBottomH));
 			if (iPage == EPageApps)
 				DrawApps(gc);
@@ -2090,7 +2125,8 @@ private:
 	// the strip: Events | Applications | Open apps are one horizontal surface. While a finger drags (or a settle runs) the three pages are
 	// pictures (iPg, one per page, window sized) and Draw() lays them side by side at the offset iStripX, wrapping at the ends
 	CFbsBitmap* iPg[3] = { NULL, NULL, NULL };
-	TBool iStripOn = EFalse;
+	TBool iStripOn = EFalse, iPgOk[3];
+	CIdle* iIdle = NULL;
 	TInt iStripX = 0, iAnimFrom = 0, iAnimTo = 0, iAnimDur = 1, iAnimPage = -1;
 	TInt64 iAnimStart = 0;
 	CPeriodic* iAnimTimer = NULL;
