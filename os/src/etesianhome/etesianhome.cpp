@@ -2795,10 +2795,14 @@ private:
 			{
 			// the system lifted the lock (the power key wakes the phone and lifts it): the layer stays up until the swipe. Locking again here would
 			// blank the display again, so the layer keeps its own state
-			self->Redraw();
+			self->iDrawn = EFalse;
+			self->Redraw();			// drawn again every tick: a window the server redrew (display back on) would stay the background colour
 			}
 		else if (locked)
-			self->Redraw();			// the clock minute
+			{
+			self->iDrawn = EFalse;
+			self->Redraw();
+			}
 		return 0;
 		}
 	void Show()
@@ -2913,13 +2917,7 @@ private:
 		{
 		TWsEvent e;
 		iWs.GetEvent(e);
-		if (e.Type() == EEventRedraw && iShown)
-			{
-			// the window server asks for the picture again (the display came back, the window was uncovered): else it stays the background colour
-			iDrawn = EFalse;
-			Redraw();
-			}
-		else if (e.Type() == EEventPointer && iShown)
+		if (e.Type() == EEventPointer && iShown)
 			{
 			const TPointerEvent& pe = *e.Pointer();
 			if (pe.iType == TPointerEvent::EButton1Down)
