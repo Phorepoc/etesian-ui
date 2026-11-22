@@ -2963,6 +2963,13 @@ private:
 			TBuf<16> dn, mn;
 			TRAP_IGNORE(now.FormatL(dn, _L("%E")));
 			TRAP_IGNORE(now.FormatL(mn, _L("%N")));
+			if (mn.Length() == 0)
+				{
+				static const char* const names[12] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+				const TInt m = (TInt)dt.Month();
+				if (m >= 0 && m < 12)
+					mn.Copy(TPtrC8((const TUint8*)names[m]));
+				}
 			ds.Format(_L("%S %d %S"), &dn, dt.Day() + 1, &mn);
 			}
 		if (iF[1])
