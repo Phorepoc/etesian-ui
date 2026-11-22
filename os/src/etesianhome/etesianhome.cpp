@@ -207,6 +207,7 @@ public:
 _LIT(KMenuCharging, "  (charging)");
 _LIT(KMenuNone, "");
 enum TEtPage { EPageEvents = 0, EPageApps = 1, EPageOpen = 2 };
+const TInt KNoPage = -100;		// "no page": the settle springs back (a page of -1 is a real target: Events wraps to Open apps)
 static const TBool KShowPageDots = EFalse;		// a setting in the guide; off by default
 // the fonts of the Etesian type scale (guide 03)
 enum TEtFont { EFLabel, EFBody, EFTitle, EFSum, EFXs, EFXsB, EFBtn, EFDay, EFDate, EFCount };
@@ -421,6 +422,36 @@ public:
 			iF[i] = NULL;
 		}
 
+	// a copy of a bitmap drawn through a bitmap device (an extended skin bitmap is rendered by the draw), NULL when anything fails
+	CFbsBitmap* SnapshotL(const CFbsBitmap* aSrc, TDisplayMode aMode)
+		{
+		CFbsBitmap* d = new CFbsBitmap;
+		if (!d)
+			return NULL;
+		CFbsBitmapDevice* dev = NULL;
+		CFbsBitGc* gc = NULL;
+		TBool ok = EFalse;
+		if (d->Create(aSrc->SizeInPixels(), aMode) == KErrNone)
+			{
+			TRAPD(e, dev = CFbsBitmapDevice::NewL(d); User::LeaveIfError(dev->CreateContext(gc)));
+			if (e == KErrNone && gc)
+				{
+				gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+				gc->SetBrushColor(KRgbBlack);
+				gc->Clear();
+				gc->BitBlt(TPoint(0, 0), aSrc);
+				ok = ETrue;
+				}
+			}
+		delete gc;
+		delete dev;
+		if (!ok)
+			{
+			delete d;
+			d = NULL;
+			}
+		return d;
+		}
 	// the icon the way the application menu gets it: through the skin (MIF / SVG icons are scaled, themed icons found)
 	void LoadIconL(CEtApp& aApp)
 		{
@@ -442,6 +473,22 @@ public:
 				AknIconUtils::SetSize(bmp, g, EAspectRatioPreserved);
 				if (mask)
 					AknIconUtils::SetSize(mask, g, EAspectRatioPreserved);
+				}
+			// the skin's bitmaps live in the icon server's cache and can be compressed or released when the memory is needed: after some minutes the
+			// grid went blank on the phone. The picture is copied once, here, into bitmaps of our own.
+			CFbsBitmap* ownBmp = SnapshotL(bmp, EColor16MU);
+			CFbsBitmap* ownMask = mask ? SnapshotL(mask, EGray256) : NULL;
+			if (ownBmp && (ownMask || !mask))
+				{
+				delete bmp;
+				delete mask;
+				bmp = ownBmp;
+				mask = ownMask;
+				}
+			else
+				{
+				delete ownBmp;
+				delete ownMask;
 				}
 			aApp.iBmp = bmp;
 			aApp.iMask = mask;
@@ -920,7 +967,7 @@ public:
 		if (commit)
 			StartSettle(dx < 0 ? -iW : iW, dx < 0 ? iPage + 1 : iPage - 1);
 		else
-			StartSettle(0, -1);
+			StartSettle(0, KNoPage);
 		}
 	void StartSettle(TInt aTo, TInt aPage)
 		{
@@ -965,9 +1012,9 @@ public:
 		iAnimTimer->Cancel();
 		LogFrames("settle");
 		const TInt page = iAnimPage;
-		iAnimPage = -1;
+		iAnimPage = KNoPage;
 		EndStrip();
-		if (page >= 0)
+		if (page != KNoPage)
 			SetPage(page);			// wraps; draws the page for real
 		else
 			DrawNow();
@@ -978,9 +1025,9 @@ public:
 			{
 			iAnimTimer->Cancel();
 			const TInt page = iAnimPage;
-			iAnimPage = -1;
+			iAnimPage = KNoPage;
 			EndStrip();
-			if (page >= 0)
+			if (page != KNoPage)
 				SetPage(page);
 			}
 		}
@@ -1426,11 +1473,16 @@ public:
 	// a caption wider than its box is cut
 	void Fit(TDes& aText, const CFont* aFont, TInt aWidth) const
 		{
-		while (aText.Length() > 1 && aFont->TextWidthInPixels(aText) > aWidth)
+		if (aFont->TextWidthInPixels(aText) <= aWidth)
+			return;
+		// cut and end with an ellipsis (U+2026), never a bare cut
+		while (aText.Length() > 1 && aFont->TextWidthInPixels(aText) + aFont->CharWidthInPixels(0x2026) > aWidth)
 			{
 			aText.SetLength(aText.Length() - 1);
 			aText.Trim();
 			}
+		if (aText.Length() < aText.MaxLength())
+			aText.Append(TChar(0x2026));
 		}
 	// a squircle outline (n = 2.8): the selection highlight; guide 20: never a rounded rectangle for these
 	void DrawSquircleRing(CBitmapContext& gc, const TRect& aR) const
@@ -2151,7 +2203,7 @@ private:
 	CFbsBitmap* iPg[3] = { NULL, NULL, NULL };
 	TBool iStripOn = EFalse, iPgOk[3];
 	CIdle* iIdle = NULL;
-	TInt iStripX = 0, iAnimFrom = 0, iAnimTo = 0, iAnimDur = 1, iAnimPage = -1;
+	TInt iStripX = 0, iAnimFrom = 0, iAnimTo = 0, iAnimDur = 1, iAnimPage = -100;
 	TInt64 iAnimStart = 0;
 	CPeriodic* iAnimTimer = NULL;
 	TInt iVelX[2], iVelT[2];
@@ -2814,18 +2866,38 @@ private:
 		{
 		CEtLock* self = static_cast<CEtLock*>(aThis);
 		const TBool locked = self->iKl.IsKeyLockEnabled();
+		TInt on = 1;
+		HAL::Get(HAL::EDisplayState, on);
+		if (on == 0)
+			{
+			// the display is off: nothing is drawn (a redraw every tick kept the phone busy). The lock follows the blank, as on the N9: an inactivity
+			// blank locks the phone just as the power key does.
+			if (!self->iDispOff)
+				{
+				self->iDispOff = ETrue;
+				if (!locked && !self->iShown)
+					{
+					self->iKl.EnableKeyLock();
+					RDebug::Printf("PH: [etesianlock] the screen blanked: locked");
+					}
+				}
+			if (locked && !self->iShown)
+				self->Show();
+			return 0;
+			}
+		if (self->iDispOff)
+			{
+			self->iDispOff = EFalse;
+			self->iDrawn = EFalse;				// the display is back: draw the layer again once
+			}
 		if (locked && !self->iShown)
 			self->Show();
-		else if (!locked && self->iShown)
+		else if (self->iShown)
 			{
-			// the system lifted the lock (the power key wakes the phone and lifts it): the layer stays up until the swipe. Locking again here would
-			// blank the display again, so the layer keeps its own state
-			self->iDrawn = EFalse;
-			self->Redraw();			// drawn again every tick: a window the server redrew (display back on) would stay the background colour
-			}
-		else if (locked)
-			{
-			self->iDrawn = EFalse;
+			// the layer stays up until the swipe, also when the system lifted the lock (the power key wakes the phone and lifts it); locking again here
+			// would blank the display again. The picture is renewed every fifth tick (a window the server redrew would stay the background colour).
+			if (++self->iTick % 5 == 0)
+				self->iDrawn = EFalse;
 			self->Redraw();
 			}
 		return 0;
@@ -2869,63 +2941,68 @@ private:
 		gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
 		gc->SetBrushColor(TRgb(0, 0, 0));
 		gc->DrawRect(TRect(TPoint(0, 0), iScreen));
+		gc->SetBrushStyle(CGraphicsContext::ENullBrush);		// text is drawn without a background (a stale brush colour filled the text areas)
 		const TInt w = iScreen.iWidth, h = iScreen.iHeight;
+		const TInt mar = Sc(16);
 		TInt y = Sc(28);
 		TBuf<16> ts;
 		TRAP_IGNORE(now.FormatL(ts, _L("%J%:1%T")));
+		// the clock and the date are right-aligned (guide 20-phone, lock screen)
 		if (iF[0])
 			{
 			gc->UseFont(iF[0]);
 			gc->SetPenStyle(CGraphicsContext::ESolidPen);
 			gc->SetPenColor(TRgb(255, 255, 255));
-			const TRect r(0, y, w, y + iF[0]->HeightInPixels());
-			gc->DrawText(ts, r, iF[0]->AscentInPixels(), CGraphicsContext::ECenter);
+			const TRect r(0, y, w - mar, y + iF[0]->HeightInPixels());
+			gc->DrawText(ts, r, iF[0]->AscentInPixels(), CGraphicsContext::ERight);
 			y = r.iBr.iY;
 			gc->DiscardFont();
 			}
 		TBuf<40> ds;
-		{
-		// the date as "Sunday 22 November": the format string with a day number would cut the text after the day name, so it is put together
-		TBuf<16> dn, mn;
-		TRAP_IGNORE(now.FormatL(dn, _L("%E")));
-		TRAP_IGNORE(now.FormatL(mn, _L("%N")));
-		ds.Format(_L("%S %d %S"), &dn, dt.Day() + 1, &mn);
-		}
+			{
+			TBuf<16> dn, mn;
+			TRAP_IGNORE(now.FormatL(dn, _L("%E")));
+			TRAP_IGNORE(now.FormatL(mn, _L("%N")));
+			ds.Format(_L("%S %d %S"), &dn, dt.Day() + 1, &mn);
+			}
 		if (iF[1])
 			{
 			gc->UseFont(iF[1]);
 			gc->SetPenColor(TRgb(0xC8, 0xC8, 0xC8));
-			const TRect r(0, y, w, y + iF[1]->HeightInPixels());
-			gc->DrawText(ds, r, iF[1]->AscentInPixels(), CGraphicsContext::ECenter);
+			const TRect r(0, y, w - mar, y + iF[1]->HeightInPixels());
+			gc->DrawText(ds, r, iF[1]->AscentInPixels(), CGraphicsContext::ERight);
 			y = r.iBr.iY + Sc(16);
 			gc->DiscardFont();
 			}
-		// the newest three notification cards: 8 dp radius, a lit 44 dp squircle, title 16, text 14
+		// the newest three notification cards (guide 23: #B30C0F12 over black, 8 dp radius, 16 x 12 dp padding, a 44 dp lit squircle, the message 18 regular
+		// white, the sender 14 regular at 80 % white)
 		const TInt n = iSrc.LockCardCount() > 3 ? 3 : iSrc.LockCardCount();
 		for (TInt i = 0; i < n; i++)
 			{
 			TBuf<48> title, sub;
 			iSrc.LockCard(i, title, sub);
-			const TRect card(Sc(11), y, w - Sc(11), y + Sc(60));
+			const TRect card(Sc(11), y, w - Sc(11), y + Sc(68));
 			gc->SetPenStyle(CGraphicsContext::ENullPen);
-			gc->SetBrushColor(TRgb(0x1C, 0x20, 0x26));
+			gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+			gc->SetBrushColor(TRgb(0x08, 0x0A, 0x0C));
 			gc->DrawRoundRect(card, TSize(Sc(8), Sc(8)));
-			const TRect ic(card.iTl.iX + Sc(8), card.iTl.iY + Sc(8), card.iTl.iX + Sc(8) + Sc(44), card.iTl.iY + Sc(8) + Sc(44));
-			gc->SetBrushColor(TRgb(0x45, 0x91, 0xFF));
-			gc->DrawRoundRect(ic, TSize(Sc(14), Sc(14)));
-			gc->SetPenStyle(CGraphicsContext::ESolidPen);
-			gc->SetPenColor(TRgb(255, 255, 255));
+			const TRect ic(card.iTl.iX + Sc(16), card.iTl.iY + Sc(12), card.iTl.iX + Sc(16) + Sc(44), card.iTl.iY + Sc(12) + Sc(44));
+			DrawLitSquircle(*gc, ic);
+			gc->SetBrushStyle(CGraphicsContext::ENullBrush);
+			const TInt tx = ic.iBr.iX + Sc(12);
 			if (iF[2])
 				{
 				gc->UseFont(iF[2]);
-				gc->DrawText(title, TRect(ic.iBr.iX + Sc(10), card.iTl.iY + Sc(6), card.iBr.iX - Sc(8), card.iTl.iY + Sc(32)), iF[2]->AscentInPixels(), CGraphicsContext::ELeft);
+				gc->SetPenStyle(CGraphicsContext::ESolidPen);
+				gc->SetPenColor(TRgb(255, 255, 255));
+				gc->DrawText(title, TRect(tx, card.iTl.iY + Sc(10), card.iBr.iX - Sc(16), card.iTl.iY + Sc(36)), iF[2]->AscentInPixels(), CGraphicsContext::ELeft);
 				gc->DiscardFont();
 				}
 			if (iF[3])
 				{
 				gc->UseFont(iF[3]);
-				gc->SetPenColor(TRgb(0xC8, 0xC8, 0xC8));
-				gc->DrawText(sub, TRect(ic.iBr.iX + Sc(10), card.iTl.iY + Sc(32), card.iBr.iX - Sc(8), card.iBr.iY - Sc(4)), iF[3]->AscentInPixels(), CGraphicsContext::ELeft);
+				gc->SetPenColor(TRgb(204, 204, 204));		// 80 % white
+				gc->DrawText(sub, TRect(tx, card.iTl.iY + Sc(36), card.iBr.iX - Sc(16), card.iBr.iY - Sc(6)), iF[3]->AscentInPixels(), CGraphicsContext::ELeft);
 				gc->DiscardFont();
 				}
 			y = card.iBr.iY + Sc(8);
@@ -2934,7 +3011,7 @@ private:
 			{
 			gc->UseFont(iF[3]);
 			gc->SetPenStyle(CGraphicsContext::ESolidPen);
-			gc->SetPenColor(TRgb(0xC8, 0xC8, 0xC8));
+			gc->SetPenColor(TRgb(0xE6, 0xE6, 0xE6));
 			gc->DrawText(_L("Swipe sideways to unlock"), TRect(0, h - Sc(40), w, h - Sc(8)), iF[3]->AscentInPixels(), CGraphicsContext::ECenter);
 			gc->DiscardFont();
 			}
@@ -2942,7 +3019,31 @@ private:
 		gc->Deactivate();
 		delete gc;
 		iWs.Flush();
-		RDebug::Printf("PH: [etesianlock] drawn %dx%d", w, h);
+		}
+	// a lit squircle (n = 2.8, a lighter top half over a darker bottom): the card's icon tile
+	void DrawLitSquircle(CWindowGc& aGc, const TRect& aR) const
+		{
+		const TInt N = 48;
+		TPoint pts[N + 1];
+		const TReal hw = aR.Width() / 2.0, hh = aR.Height() / 2.0;
+		for (TInt i = 0; i <= N; i++)
+			{
+			TReal a = 6.283185307 * i / N, c = 0, sn = 0, pc = 0, ps = 0;
+			Math::Cos(c, a);
+			Math::Sin(sn, a);
+			TReal ac = c < 0 ? -c : c, as = sn < 0 ? -sn : sn;
+			Math::Pow(pc, ac, 2.0 / 2.8);
+			Math::Pow(ps, as, 2.0 / 2.8);
+			pts[i] = TPoint(aR.iTl.iX + (TInt)(hw + hw * (c < 0 ? -pc : pc)), aR.iTl.iY + (TInt)(hh + hh * (sn < 0 ? -ps : ps)));
+			}
+		aGc.SetPenStyle(CGraphicsContext::ENullPen);
+		aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+		aGc.SetBrushColor(TRgb(0x0B, 0x3F, 0x9E));
+		aGc.DrawPolygon(pts, N + 1);
+		aGc.SetClippingRect(TRect(aR.iTl, TSize(aR.Width(), aR.Height() / 2)));
+		aGc.SetBrushColor(TRgb(0x2A, 0x86, 0xD8));
+		aGc.DrawPolygon(pts, N + 1);
+		aGc.CancelClippingRect();
 		}
 	void RunL()
 		{
@@ -2952,12 +3053,23 @@ private:
 			{
 			const TPointerEvent& pe = *e.Pointer();
 			if (pe.iType == TPointerEvent::EButton1Down)
+				{
 				iDown = pe.iParentPosition;
+				iDownTime.UniversalTime();
+				}
 			else if (pe.iType == TPointerEvent::EButton1Up)
 				{
+				// guide 23-phone-behaviour: a drag in any direction unlocks past 35 % of the screen on that axis, or on a flick faster than 1000 dp/s
 				const TInt dx = pe.iParentPosition.iX - iDown.iX, dy = pe.iParentPosition.iY - iDown.iY;
 				const TInt ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-				if (ax > iScreen.iWidth / 4 || ay > iScreen.iHeight / 4)
+				TTime nowT;
+				nowT.UniversalTime();
+				TInt ms = (TInt)(nowT.MicroSecondsFrom(iDownTime).Int64() / 1000);
+				if (ms < 1) ms = 1;
+				const TInt far = ax > ay ? ax : ay;
+				const TBool pastThird = ax * 100 > iScreen.iWidth * 35 || ay * 100 > iScreen.iHeight * 35;
+				const TBool flick = far > Sc(8) && far * 1000 / ms > Sc(1000);
+				if (pastThird || flick)
 					Unlock();
 				}
 			}
@@ -2980,8 +3092,9 @@ private:
 	CFont* iF[4] = { NULL, NULL, NULL, NULL };
 	TSize iScreen;
 	TPoint iDown;
-	TBool iShown = EFalse, iDrawn = EFalse;
-	TInt iLastMin = -1;
+	TBool iShown = EFalse, iDrawn = EFalse, iDispOff = EFalse;
+	TInt iLastMin = -1, iTick = 0;
+	TTime iDownTime;
 	};
 
 class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions, public MEtLockSource, public MEtStatusActions
