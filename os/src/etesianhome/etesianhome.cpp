@@ -2388,7 +2388,9 @@ private:
 		{
 		iShown = ETrue;
 		iSrc.LockRefresh();
+		Geometry();			// the screen mode can differ from the one the layer was made in (the lock turns the phone to portrait)
 		iLastMin = -1;
+		iDrawn = EFalse;
 		iGroup.SetOrdinalPosition(0, 20000);
 		iWin.SetVisible(ETrue);
 		Redraw();
