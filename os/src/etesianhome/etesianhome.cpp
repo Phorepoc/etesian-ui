@@ -3173,14 +3173,15 @@ public:
 	void ConstructL()
 		{
 		BaseConstructL(EAknEnableSkin);
-		UseNativeMode();
+		// (UseNativeMode() is not called: with the native screen mode now loaded by the window server (wsini modes 1 and 2) switching the
+		// application's mode after CONE created its window group left Home blank; native Home needs the mode chosen before that group exists)
 		// the shell draws its own bars: no Avkon status pane, no softkey bar
 		if (StatusPane())
 			StatusPane()->MakeVisible(EFalse);
 		if (Cba())
 			Cba()->MakeVisible(EFalse);
 		iView = new (ELeave) CEtHomeContainer;
-		iView->ConstructL(NativeRect());
+		iView->ConstructL(ApplicationRect());
 		AddToStackL(iView);
 		// The Menu key. Symbian^3's cap server captures it at priority 0 and toggles between the idle application and its
 		// application menu (matrixmenu): with Home as the idle application, a press while Home is in front opens that menu. Home
@@ -3301,7 +3302,7 @@ public:
 		if (aType == KEikDynamicLayoutVariantSwitch && iEdges)
 			iEdges->Relayout();
 		if (aType == KEikDynamicLayoutVariantSwitch && iView)
-			iView->Relayout(NativeRect());
+			iView->Relayout(ApplicationRect());
 		else if (aType == KAknsMessageSkinChange && iView)
 			iView->SkinChanged();		// another theme: the app icons come from the active skin
 		}
