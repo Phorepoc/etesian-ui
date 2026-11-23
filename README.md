@@ -15,7 +15,7 @@ Build (the pdk's package.yml does this from `package.conf`; `release.yml` publis
 
     PHOREPOC_PDK=<pdk> PHOREPOC_BUILD=<out> bash recipes/sis.sh
 
-Licence: AGPL-3.0-only (`LICENSE`), with the additional terms of `ADDITIONAL-TERMS.md`. This shell is our implementation
+Licence: AGPL-3.0-only (`LICENSE`), with the additional terms of `ADDITIONAL-TERMS.md`. This shell is Phorepoc's implementation
 of the [Etesian Design Language](https://github.com/Etesian-design/design) shell and carries the same terms as the upstream:
 the section 7(b) attribution "Etesian, founded by Kyriakos Bompotis", which must stay in the `NOTICE` and wherever a derived
 work shows its legal notices; section 7(e), the Etesian names and logos (`TRADEMARKS.md`); and the Phorepoc exception, under
