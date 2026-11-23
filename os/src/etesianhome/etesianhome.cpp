@@ -2336,6 +2336,8 @@ private:
 		Geometry();
 		for (TInt i = 0; i < ECount; i++)
 			iWin[i].Activate();
+		iStripsLive = ETrue;
+		ClearStrips();
 		Apply();
 		Listen();
 		}
@@ -2386,7 +2388,8 @@ private:
 		iWin[ETop].SetExtent(TPoint(0, 0), TSize(s.iWidth, top));
 		iWin[ETopBand].SetExtent(TPoint(iZone, top), TSize(s.iWidth - 2 * iZone, band));
 		RDebug::Printf("PH: [etesianedges] screen %dx%d zone %d slop %d top %d px", s.iWidth, s.iHeight, iZone, iSlop, top);
-		ClearStrips();
+		if (iStripsLive)
+			ClearStrips();
 		}
 	// the strips are alpha windows nobody draws into: a compositing window server shows whatever its buffer holds, which showed as stray one-pixel lines
 	// and ticks along the edges. Each is drawn once with fully transparent pixels (after every new size).
@@ -2773,6 +2776,7 @@ private:
 	CPeriodic* iTimer = NULL;
 	RArray<TPoint> iPoints;
 	TSize iScreen;
+	TBool iStripsLive = EFalse;
 	TInt iMode = -1, iZone = 20, iSlop = 8, iEdge = 0;
 	TPoint iStart, iAnchor, iUpAt;
 	TBool iUpPending = EFalse;
