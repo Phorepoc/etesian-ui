@@ -341,7 +341,8 @@ public:
 		MakeFonts();
 		iLabelH = iF[EFLabel]->HeightInPixels() + 2;
 		iCellH = Sc(4) + iTile + Sc(4) + iLabelH + Sc(8);
-		iBottomH = Sc(36);
+		iBottomH = KShowPageDots ? Sc(36) : 0;		// no band under the grid unless the page dots are shown: the grid runs to the bottom edge
+		iEditBandH = Sc(36);							// the band of the Done / Close all buttons in edit mode
 		TRAP_IGNORE(MakeLitL(iTileBmp, iMaskBmp, iTile, iTile, 0, ETrue, 0x2A2A2A, KNoMid, 0x080808, 0x505050, 0x393839));
 		const TInt evt = Sc(44);		// notification thumbnails are 43-44 dp squircles
 		TRAP_IGNORE(MakeLitL(iEvTile, iEvMask, evt, evt, 0, ETrue, 0x2A2A2A, KNoMid, 0x080808, 0x505050, 0x393839));
@@ -754,8 +755,8 @@ public:
 		fs.Close();
 		RDebug::Printf("PH: [etesianhome] apps order saved (%d)", iApps.Count());
 		}
-	TRect DoneRect() const { return TRect(TPoint(iW / 2 - iBtnW - Sc(6), iH - iBottomH + (iBottomH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
-	TRect CloseAllRect() const { return TRect(TPoint(iW / 2 + Sc(6), iH - iBottomH + (iBottomH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
+	TRect DoneRect() const { return TRect(TPoint(iW / 2 - iBtnW - Sc(6), iH - iEditBandH + (iEditBandH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
+	TRect CloseAllRect() const { return TRect(TPoint(iW / 2 + Sc(6), iH - iEditBandH + (iEditBandH - iBtnH) / 2), TSize(iBtnW, iBtnH)); }
 	TInt HitTest(const TPoint& aP) const
 		{
 		if (aP.iY < iStatusH || aP.iY >= iH - iBottomH)
@@ -1813,7 +1814,7 @@ public:
 		gc.SetBrushColor(Rgb(KColBg));
 		gc.SetPenStyle(CGraphicsContext::ENullPen);
 		gc.DrawRect(TRect(0, 0, iW, iStatusH));
-		gc.DrawRect(TRect(0, iH - iBottomH, iW, iH));
+		gc.DrawRect(TRect(0, iH - ((iEdit || iEditApps) ? iEditBandH : iBottomH), iW, iH));
 		const CFont* f = iF[EFLabel];
 		gc.UseFont(f);
 		gc.SetPenStyle(CGraphicsContext::ESolidPen);
@@ -2217,7 +2218,7 @@ private:
 	CPeriodic* iHoldTimer = NULL;
 	CFont* iF[EFCount];
 	TBool iOwnFonts = EFalse;
-	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0, iMargin = 0;
+	TInt iLastState = -2, iCols = 4, iLabelH = 0, iUnit = 0, iW = 0, iH = 0, iStatusH = 0, iTile = 0, iCellW = 0, iCellH = 0, iBottomH = 0, iEditBandH = 0, iMargin = 0;
 	TInt iCardCols = 2, iCardW = 0, iCardH = 0, iGap = 0, iClosingWg = 0, iPrevW = 0, iPrevH = 0, iXSize = 0, iBtnW = 0, iBtnH = 0, iEvSize = 0;
 	TInt iPage = EPageApps, iMissed = 0, iUnread = 0;
 	TInt iScroll = 0, iSel = -1, iDownScroll = 0, iDownHit = -1;
@@ -3107,16 +3108,52 @@ private:
 class CEtHomeAppUi : public CAknAppUi, public MEtEdgeActions, public MEtLockSource, public MEtStatusActions
 	{
 public:
+	// the largest screen mode with the orientation of the current one. On an image whose Symbian clients run in a smaller (legacy) mode that the
+	// compositor doubles, Home draws in the native mode itself: sharp icons and text at the panel's resolution. Where there is one mode, nothing changes.
+	TRect NativeRect()
+		{
+		CWsScreenDevice* sd = iCoeEnv->ScreenDevice();
+		return TRect(TPoint(0, 0), sd->SizeInPixels());
+		}
+	void UseNativeMode()
+		{
+		CWsScreenDevice* sd = iCoeEnv->ScreenDevice();
+		const TSize cur = sd->SizeInPixels();
+		const TBool port = cur.iWidth < cur.iHeight;
+		TInt best = -1;
+		TInt bestArea = cur.iWidth * cur.iHeight;
+		const TInt n = sd->NumScreenModes();
+		for (TInt i = 0; i < n; i++)
+			{
+			TPixelsAndRotation pr;
+			if (sd->GetScreenModeSizeAndRotation(i, pr) != KErrNone)
+				continue;
+			RDebug::Printf("PH: [etesianhome] screen mode %d: %dx%d", i, pr.iPixelSize.iWidth, pr.iPixelSize.iHeight);
+			if ((pr.iPixelSize.iWidth < pr.iPixelSize.iHeight) == port && pr.iPixelSize.iWidth * pr.iPixelSize.iHeight > bestArea)
+				{
+				best = i;
+				bestArea = pr.iPixelSize.iWidth * pr.iPixelSize.iHeight;
+				}
+			}
+		if (best >= 0)
+			{
+			sd->SetAppScreenMode(best);
+			sd->SetScreenModeEnforcement(ESizeEnforcementNone);
+			const TSize now = sd->SizeInPixels();
+			RDebug::Printf("PH: [etesianhome] native screen mode %d: %dx%d (was %dx%d)", best, now.iWidth, now.iHeight, cur.iWidth, cur.iHeight);
+			}
+		}
 	void ConstructL()
 		{
 		BaseConstructL(EAknEnableSkin);
+		UseNativeMode();
 		// the shell draws its own bars: no Avkon status pane, no softkey bar
 		if (StatusPane())
 			StatusPane()->MakeVisible(EFalse);
 		if (Cba())
 			Cba()->MakeVisible(EFalse);
 		iView = new (ELeave) CEtHomeContainer;
-		iView->ConstructL(ApplicationRect());
+		iView->ConstructL(NativeRect());
 		AddToStackL(iView);
 		// The Menu key. Symbian^3's cap server captures it at priority 0 and toggles between the idle application and its
 		// application menu (matrixmenu): with Home as the idle application, a press while Home is in front opens that menu. Home
@@ -3237,7 +3274,7 @@ public:
 		if (aType == KEikDynamicLayoutVariantSwitch && iEdges)
 			iEdges->Relayout();
 		if (aType == KEikDynamicLayoutVariantSwitch && iView)
-			iView->Relayout(ApplicationRect());
+			iView->Relayout(NativeRect());
 		else if (aType == KAknsMessageSkinChange && iView)
 			iView->SkinChanged();		// another theme: the app icons come from the active skin
 		}
