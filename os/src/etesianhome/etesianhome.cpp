@@ -3154,8 +3154,7 @@ public:
 		for (TInt i = 0; i < n; i++)
 			{
 			TPixelsAndRotation pr;
-			if (sd->GetScreenModeSizeAndRotation(i, pr) != KErrNone)
-				continue;
+			sd->GetScreenModeSizeAndRotation(i, pr);
 			RDebug::Printf("PH: [etesianhome] screen mode %d: %dx%d", i, pr.iPixelSize.iWidth, pr.iPixelSize.iHeight);
 			if ((pr.iPixelSize.iWidth < pr.iPixelSize.iHeight) == port && pr.iPixelSize.iWidth * pr.iPixelSize.iHeight > bestArea)
 				{
