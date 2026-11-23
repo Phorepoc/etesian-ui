@@ -15,21 +15,6 @@ Build (the pdk's package.yml does this from `package.conf`; `release.yml` publis
 
     PHOREPOC_PDK=<pdk> PHOREPOC_BUILD=<out> bash recipes/sis.sh
 
-## Screenshots
-
-Etesian on Phorepoc OS (x32, 720 x 1440) with the [Etesian theme](https://github.com/Phorepoc/etesian-theme).
-
-| | | |
-|---|---|---|
-| ![Applications](docs/screenshots/01-applications.png) | ![More applications](docs/screenshots/02-applications-more.png) | ![Events](docs/screenshots/03-events.png) |
-| Applications | Applications, scrolled | Events |
-| ![Open apps with Calculator](docs/screenshots/04-open-apps.png) | ![Swiping between the pages](docs/screenshots/05-swipe.png) | ![Lock screen](docs/screenshots/06-lock-screen.png) |
-| Open apps, with a running app | The three pages are one strip: mid-swipe | Lock screen |
-| ![Dialler](docs/screenshots/07-dialler.png) | ![Status menu](docs/screenshots/08-status-menu.png) | ![Etesian shell settings](docs/screenshots/09-shell-settings.png) |
-| Dialler | Status menu | Etesian shell settings |
-| ![Calculator in the Etesian theme](docs/screenshots/10-calculator-theme.png) | | |
-| Calculator in the Etesian theme | | |
-
 Licence: AGPL-3.0-only (`LICENSE`), with the additional terms of `ADDITIONAL-TERMS.md`. This shell is our implementation
 of the [Etesian Design Language](https://github.com/Etesian-design/design) shell and carries the same terms as the upstream:
 the section 7(b) attribution "Etesian, founded by Kyriakos Bompotis", which must stay in the `NOTICE` and wherever a derived
