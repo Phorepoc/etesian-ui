@@ -2386,6 +2386,30 @@ private:
 		iWin[ETop].SetExtent(TPoint(0, 0), TSize(s.iWidth, top));
 		iWin[ETopBand].SetExtent(TPoint(iZone, top), TSize(s.iWidth - 2 * iZone, band));
 		RDebug::Printf("PH: [etesianedges] screen %dx%d zone %d slop %d top %d px", s.iWidth, s.iHeight, iZone, iSlop, top);
+		ClearStrips();
+		}
+	// the strips are alpha windows nobody draws into: a compositing window server shows whatever its buffer holds, which showed as stray one-pixel lines
+	// and ticks along the edges. Each is drawn once with fully transparent pixels (after every new size).
+	void ClearStrips()
+		{
+		CWindowGc* gc = NULL;
+		if (iDev->CreateContext(gc) != KErrNone || !gc)
+			return;
+		for (TInt i = 0; i < ECount; i++)
+			{
+			gc->Activate(iWin[i]);
+			iWin[i].Invalidate();
+			iWin[i].BeginRedraw();
+			gc->SetDrawMode(CGraphicsContext::EDrawModeWriteAlpha);
+			gc->SetPenStyle(CGraphicsContext::ENullPen);
+			gc->SetBrushStyle(CGraphicsContext::ESolidBrush);
+			gc->SetBrushColor(TRgb(0, 0, 0, 0));
+			gc->DrawRect(TRect(TPoint(0, 0), iWin[i].Size()));
+			iWin[i].EndRedraw();
+			gc->Deactivate();
+			}
+		delete gc;
+		iWs.Flush();
 		}
 	// the settings of the Etesian shell app (CenRep E7015A01): key 20 edge gestures (absent = on), key 21 Back by swiping in (0 off, 1 left, 2 right)
 	void ReadConfig()
