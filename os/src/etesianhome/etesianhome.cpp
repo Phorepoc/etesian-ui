@@ -467,7 +467,16 @@ public:
 			if (mask)
 				AknIconUtils::SetSize(mask, full, EAspectRatioPreserved);
 			aApp.iIsSq = IsSquircleMask(mask, aApp.iUid.iUid);
-			aApp.iScalePct = iLastBoxPct > 80 && iLastBoxPct < 100 ? 10000 / iLastBoxPct : 100;
+			// the opaque box of the mask fills the tile: the stock S^3 icons carry a wide transparent inset (46-47 of 61 px, 75-77 %;
+			// audit v0.4.4: drawn 16 % under the 54 dp tile), so the floor is 70 %; the icon is rendered again at the larger size, drawn 1:1
+			aApp.iScalePct = iLastBoxPct >= 70 && iLastBoxPct < 100 ? 10000 / iLastBoxPct : 100;
+			if (aApp.iScalePct > 100 && !(ShapeAll() && !aApp.iIsSq))
+				{
+				const TInt big = iTile * aApp.iScalePct / 100;
+				AknIconUtils::SetSize(bmp, TSize(big, big), EAspectRatioPreserved);
+				if (mask)
+					AknIconUtils::SetSize(mask, TSize(big, big), EAspectRatioPreserved);
+				}
 			if (ShapeAll() && !aApp.iIsSq)
 				{
 				const TSize g(iTile * 62 / 100, iTile * 62 / 100);
@@ -506,7 +515,7 @@ public:
 			else
 				{
 				aApp.iIsSq = IsSquircleMask(aApp.iIcon->Mask(), aApp.iUid.iUid);
-				aApp.iScalePct = iLastBoxPct > 80 && iLastBoxPct < 100 ? 10000 / iLastBoxPct : 100;
+				aApp.iScalePct = iLastBoxPct >= 70 && iLastBoxPct < 100 ? 10000 / iLastBoxPct : 100;
 				}
 			}
 		}
@@ -579,7 +588,17 @@ public:
 								if (y > y1) y1 = y;
 								}
 					const TInt bw = x1 - x0 + 1, bh = y1 - y0 + 1;
-					iLastBoxPct = bw * 100 / w;		// how much of the picture the opaque box fills
+					// how much of the picture the VISIBLE art fills (the tile's size target): alpha >= 16, so the soft edge of a framed
+					// stock icon counts (at >= 128 its box was 46 of 61 px and the icon came out 10 % over the tile, re-soak v0.4.4)
+					TInt vx0 = w, vx1 = -1;
+					for (TInt y = 0; y < h; y++)
+						for (TInt x = 0; x < w; x++)
+							if (px[y * w + x] >= 16)
+								{
+								if (x < vx0) vx0 = x;
+								if (x > vx1) vx1 = x;
+								}
+					iLastBoxPct = vx1 >= vx0 ? (vx1 - vx0 + 1) * 100 / w : 100;
 					if (cnt > 0 && bw >= w / 2 && bh >= h / 2 && bw * 100 / bh > 85 && bw * 100 / bh < 118)
 						{
 						TInt rsum = 0;
