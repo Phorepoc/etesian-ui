@@ -588,7 +588,17 @@ public:
 								if (y > y1) y1 = y;
 								}
 					const TInt bw = x1 - x0 + 1, bh = y1 - y0 + 1;
-					iLastBoxPct = bw * 100 / w;		// how much of the picture the opaque box fills
+					// how much of the picture the VISIBLE art fills (the tile's size target): alpha >= 16, so the soft edge of a framed
+					// stock icon counts (at >= 128 its box was 46 of 61 px and the icon came out 10 % over the tile, re-soak v0.4.4)
+					TInt vx0 = w, vx1 = -1;
+					for (TInt y = 0; y < h; y++)
+						for (TInt x = 0; x < w; x++)
+							if (px[y * w + x] >= 16)
+								{
+								if (x < vx0) vx0 = x;
+								if (x > vx1) vx1 = x;
+								}
+					iLastBoxPct = vx1 >= vx0 ? (vx1 - vx0 + 1) * 100 / w : 100;
 					if (cnt > 0 && bw >= w / 2 && bh >= h / 2 && bw * 100 / bh > 85 && bw * 100 / bh < 118)
 						{
 						TInt rsum = 0;
