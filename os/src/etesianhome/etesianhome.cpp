@@ -2395,6 +2395,11 @@ private:
 	// and ticks along the edges. Each is drawn once with fully transparent pixels (after every new size).
 	void ClearStrips()
 		{
+		// only on a compositing (NGA) server: there each strip has a buffer of its own. The classic server draws a window straight
+		// into the screen, so the transparent WriteAlpha pixels came out BLACK over the application under the strips (24 px margins
+		// on every app, soak v0.4.4). MDisplayControl (KUidDisplayControl 0x10286499) is offered by the NGA client only.
+		if (!iDev->GetInterface(0x10286499))
+			return;
 		CWindowGc* gc = NULL;
 		if (iDev->CreateContext(gc) != KErrNone || !gc)
 			return;
