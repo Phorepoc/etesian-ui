@@ -304,6 +304,9 @@ public:
 	void ConstructL(const TRect& aRect)
 		{
 		CreateWindowL();
+		// WSERV clears a redraw to the window's background first: the default is white, which flashed for a frame on a
+		// fast swipe (PinePhone phone_gate, boot 3195); Home's own drawing is dark
+		Window().SetBackgroundColor(KRgbBlack);
 		SetRect(aRect);
 		Window().SetPointerGrab(ETrue);
 		EnableDragEvents();
